@@ -649,6 +649,38 @@ The sweep must finish inside `FM_CHECK_TIMEOUT` (default 30), because a run the 
 So a budget larger than that timeout allows is cut down to what fits instead of being refused, and the cut is reported in the report line.
 A budget that is not a whole number from 1 to 120 is still refused outright.
 
+## Fenedo Slack support (.env)
+
+The Fenedo Slack support poller (bin/fm-slack-support.sh) reads new messages from the configured support channel and only considers reports authored by Martyna or Kasia by default.
+It classifies an explicitly cosmetic or copy-only report as safe, queues a `fenedo-os` ship item for the normal writer route, and publishes a durable firstmate check wake.
+Product behavior, offer generation, invoices, financial matters, legal or privacy matters, destructive requests, security matters, and anything ambiguous are held for firstmate instead of being routed.
+The poller uses Slack's Web API over standard-library HTTPS and no paid API.
+The `complete` command posts the short completion reply in the original Slack thread after the queued fix lands.
+It never creates a Slack app, invites a bot, or prints the bot token.
+The poller is off until the effective home's gitignored `.env` contains `SLACK_BOT_TOKEN`.
+Environment values override `.env` for direct invocations.
+
+Required, in the home's gitignored `.env`:
+
+```sh
+SLACK_BOT_TOKEN=xoxb-...
+```
+
+The channel defaults to `support` and can be changed with `SLACK_SUPPORT_CHANNEL`.
+`SLACK_SUPPORT_REPORTERS` overrides the default comma-separated names `Martyna,Kasia`.
+If the app cannot receive `users.list`, `SLACK_SUPPORT_REPORTER_IDS` can instead hold the comma-separated Slack user IDs for those two reporters.
+`SLACK_API_URL` is only for a local or test API endpoint and defaults to `https://slack.com/api`.
+`SLACK_SUPPORT_TIMEOUT` defaults to 20 seconds and `SLACK_SUPPORT_MAX_MESSAGES` defaults to 25 messages per poll.
+
+Set up the integration with these three human steps:
+
+1. In the Fenedo Slack workspace, create and install a bot app with `channels:read`, `channels:history`, `groups:read`, `groups:history`, `users:read`, and `chat:write` scopes, then copy its bot token.
+2. Invite that bot to `#support` (or the value of `SLACK_SUPPORT_CHANNEL`) and ensure Martyna and Kasia can report there.
+3. Put the token in the firstmate home's `.env` as `SLACK_BOT_TOKEN=<token>` and run `bin/fm-slack-support.sh poll` on a schedule; after a safe fix lands, run `bin/fm-slack-support.sh complete <message-ts> "Fixed in fenedo-os."`.
+
+The firstmate home must be able to run `tasks-axi` for cosmetic reports because the poller files their queued `fenedo-os` work item through `bin/fm-tasks-axi.sh`.
+If the bot is not yet in the channel, Slack returns that membership error and the captain must complete step 2.
+
 ## Mail plane (.env)
 
 The mail plane (bin/fm-mail.sh) reads unseen IMAP messages and sends one SMTP message.
