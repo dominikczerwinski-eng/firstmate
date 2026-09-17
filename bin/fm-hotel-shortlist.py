@@ -27,7 +27,7 @@ def http_json(url: str, data: bytes | None = None, timeout: int = 25) -> dict | 
 
 
 def re_berlin_mitte(place: str) -> bool:
-    return bool(_re.search(r"berlin\s*mitte", place or "", __re.I))
+    return bool(_re.search(r"berlin\s*mitte", place or "", _re.I))
 
 
 def geocode(place: str) -> tuple[float, float, str]:
@@ -114,7 +114,7 @@ def booking_hotel_page(hotel_name: str, place: str, checkin: str, checkout: str)
     slug = _slug(hotel_name)
     # Germany-first; other countries still get a useful search fallback.
     country = "de"
-    if _re.search(r"\b(poland|polska|warsaw|warszawa|krakow|kraków)\b", place or "", __re.I):
+    if _re.search(r"\b(poland|polska|warsaw|warszawa|krakow|kraków)\b", place or "", _re.I):
         country = "pl"
     candidates = [
         f"https://www.booking.com/hotel/{country}/{slug}.pl.html",
