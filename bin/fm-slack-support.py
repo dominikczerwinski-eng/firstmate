@@ -225,6 +225,24 @@ def reporter_name(user: dict) -> str:
     )
 
 
+def reporter_matches(user: dict, wanted: set) -> bool:
+    profile = user.get("profile") or {}
+    fields = (
+        user.get("name", ""),
+        user.get("real_name", ""),
+        profile.get("display_name", ""),
+        profile.get("real_name", ""),
+    )
+    for field in fields:
+        normalized = str(field).casefold().strip()
+        if normalized in wanted:
+            return True
+        first_word = re.split(r"[.\s_-]+", normalized, maxsplit=1)[0]
+        if first_word in wanted:
+            return True
+    return False
+
+
 def resolve_channel(client: SlackClient, requested: str):
     for channel in client.paged(
         "conversations.list",
@@ -268,8 +286,7 @@ def resolve_reporters(client: SlackClient, configured: str, explicit_ids: str):
             ) from None
         raise
     for user in members:
-        name = reporter_name(user).casefold()
-        if name in wanted or user.get("name", "").casefold() in wanted:
+        if reporter_matches(user, wanted):
             users[str(user.get("id"))] = reporter_name(user) or str(user.get("name", ""))
     return users
 

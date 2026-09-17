@@ -41,6 +41,25 @@ EOF
   pass "fm-slack-support: .env contract and CLI help are safe"
 }
 
+test_reporter_first_name_matching() {
+  local out
+  out=$(python3 - <<'PY'
+import importlib.util
+spec = importlib.util.spec_from_file_location("support", "bin/fm-slack-support.py")
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+assert module.reporter_matches({"name": "martyna.nowak", "real_name": "Martyna Nowak"}, {"martyna"})
+assert module.reporter_matches({"real_name": "Martyna Nowak"}, {"martyna"})
+assert module.reporter_matches({"name": "kasia", "real_name": "Kasia"}, {"kasia"})
+assert not module.reporter_matches({"name": "marta", "real_name": "Marta"}, {"martyna"})
+print("ok")
+PY
+)
+assert_contains "$out" "ok" "reporter matching accepts configured first names and Slack handles"
+pass "fm-slack-support: reporter allowlist handles display names such as Martyna Nowak"
+}
+
 test_missing_token_fails_closed
 test_status_needs_no_network
 test_env_contract_and_help
+test_reporter_first_name_matching
