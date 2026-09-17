@@ -174,6 +174,99 @@ def classify(text: str):
 
 
 
+class SlackClient:
+    def __init__(self, token: str, base_url: str, timeout: int):
+        self.token = token
+        self.base_url = base_url.rstrip("/")
+        self.timeout = timeout
+
+    def call(self, method: str, params=None, payload=None):
+        if payload is None:
+            query = urllib.parse.urlencode(params or {})
+            url = self.base_url + "/" + method + ("?" + query if query else "")
+            request = urllib.request.Request(url, method="GET")
+        else:
+            url = self.base_url + "/" + method
+            body = json.dumps(payload).encode("utf-8")
+            request = urllib.request.Request(url, data=body, method="POST")
+            request.add_header("Content-Type", "application/json; charset=utf-8")
+        request.add_header("Authorization", "Bearer " + self.token)
+        try:
+            with urllib.request.urlopen(request, timeout=self.timeout) as response:
+                raw = response.read()
+        except urllib.error.HTTPError as exc:
+            raise SupportError("Slack API HTTP error " + str(exc.code)) from None
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            detail = getattr(exc, "reason", None) or exc.__class__.__name__
+            raise SupportError("Slack API connection failed: " + str(detail)) from None
+        try:
+            result = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            raise SupportError("Slack API returned invalid JSON") from None
+        if not isinstance(result, dict) or not result.get("ok"):
+            error = result.get("error", "unknown error") if isinstance(result, dict) else "invalid response"
+            raise SupportError("Slack API rejected the request: " + str(error))
+        return result
+
+    def paged(self, method: str, key: str, params=None):
+        params = dict(params or {})
+        rows = []
+        cursor = ""
+        while True:
+            query = dict(params)
+            query["limit"] = query.get("limit", 200)
+            if cursor:
+                query["cursor"] = cursor
+            result = self.call(method, query)
+            rows.extend(result.get(key, []))
+            cursor = (((result.get("response_metadata") or {}).get("next_cursor")) or "").strip()
+            if not cursor:
+                return rows
+
+
+class SupportStore:
+    def __init__(self, home: Path):
+        self.root = home / "state" / "slack-support"
+        self.root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        self.path = self.root / "state.json"
+        self.lock_path = self.root / "poll.lock"
+
+    def load(self):
+        if not self.path.exists():
+            return {"schema": SCHEMA, "latest_ts": "", "messages": {}}
+        try:
+            state = json.loads(self.path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            raise SupportError("state/slack-support/state.json is unreadable") from None
+        if state.get("schema") != SCHEMA or not isinstance(state.get("messages"), dict):
+            raise SupportError("state/slack-support/state.json has an unsupported schema")
+        return state
+
+    def save(self, state):
+        fd, name = tempfile.mkstemp(prefix=".state-", dir=self.root)
+        try:
+            os.fchmod(fd, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                json.dump(state, stream, ensure_ascii=False, sort_keys=True, indent=2)
+                stream.write("\n")
+            os.replace(name, self.path)
+        finally:
+            try:
+                os.unlink(name)
+            except FileNotFoundError:
+                pass
+
+    def lock(self):
+        handle = self.lock_path.open("a+")
+        os.chmod(self.lock_path, 0o600)
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            handle.close()
+            raise SupportError("another Slack support poll is already running") from None
+        return handle
+
+
 def reporter_name(user: dict) -> str:
     profile = user.get("profile") or {}
     return str(
