@@ -666,7 +666,7 @@ It classifies ordinary operational bugs (offer failures, errors, measurement, Pi
 Only hard gates are held for firstmate: secrets, destructive wipes, security incidents, customer-message sends, owner-level payment/price changes, and explicit external writes (for example Pipedrive write).
 The poller uses Slack's Web API over standard-library HTTPS and no paid API.
 User-facing bot replies are Polish by default (ack on intake and completion text).
-The `complete` command posts the completion reply in the original channel thread or DM after the queued fix lands.
+The `complete` command posts the completion reply in the original channel thread or DM after the queued fix lands. Ack, completion, and thread-followup replies tag interested humans: the ticket creator and any person who @mentioned Fenek in that thread. Open-ticket thread replies that @mention Fenek are scanned on each poll (channel history alone misses them) and wake firstmate as `thread-followup`.
 With DM enabled, the poller also reads direct messages to the bot (private topics that should not hit `#support`).
 It never creates a Slack app, invites a bot, or prints the bot token.
 The poller is off until the effective home's gitignored `.env` contains `SLACK_BOT_TOKEN`.

@@ -477,11 +477,18 @@ def scan_open_thread_followups(
                 "acked": False,
             }
             try:
+                ping_ids = [
+                    str(record.get("author_id") or ""),
+                    user_id,
+                ]
                 ack = post_user_reply(
                     client,
                     channel_id,
                     thread_ts,
-                    "Widzę follow-up w wątku — czytam i wrócę z odpowiedzią.",
+                    with_interested_mentions(
+                        "Widzę follow-up w wątku — czytam i wrócę z odpowiedzią.",
+                        *ping_ids,
+                    ),
                     "channel",
                 )
                 follow["ack_ts"] = str(ack.get("ts", ""))
@@ -513,6 +520,39 @@ def list_im_channels(client: SlackClient):
                 "(reinstall the Fenek app after adding them); channel poll still works"
             ) from None
         raise
+
+
+def slack_mention(user_id: str) -> str:
+    uid = str(user_id or "").strip()
+    if not uid or not uid.startswith("U"):
+        return ""
+    return "<@" + uid + ">"
+
+
+def interested_mentions(*user_ids: str) -> str:
+    """Deduped Slack @mentions for ticket creator and anyone who pinged Fenek."""
+    seen = set()
+    parts = []
+    for raw in user_ids:
+        m = slack_mention(raw)
+        if not m or m in seen:
+            continue
+        seen.add(m)
+        parts.append(m)
+    return " ".join(parts)
+
+
+def with_interested_mentions(text: str, *user_ids: str) -> str:
+    prefix = interested_mentions(*user_ids)
+    body = (text or "").strip()
+    if not prefix:
+        return body
+    if not body:
+        return prefix
+    # Avoid double-tagging if the body already leads with the same mentions.
+    if body.startswith(prefix):
+        return body
+    return prefix + " " + body
 
 
 def post_user_reply(client: SlackClient, channel_id: str, thread_ts: str, text: str, source: str):
@@ -676,8 +716,10 @@ def ingest_messages(
             "acked": False,
         }
         # Polish user ack in-thread / in-DM (best-effort; never blocks routing).
+        # Always ping the ticket creator so the interested human is notified.
         try:
-            ack = post_user_reply(client, channel_id, thread_ts, ack_text(classification), source)
+            ack_body = with_interested_mentions(ack_text(classification), user_id)
+            ack = post_user_reply(client, channel_id, thread_ts, ack_body, source)
             record["ack_ts"] = str(ack.get("ts", ""))
             record["acked"] = True
         except SupportError as exc:
@@ -915,6 +957,15 @@ def complete(args):
         if not channel_id:
             raise SupportError("support record has no channel_id; cannot reply")
         source = str(record.get("source") or "channel")
+        # Tag creator + any humans who @mentioned Fenek in the thread follow-ups.
+        ping_ids = [str(record.get("author_id") or "")]
+        for follow in (state.get("thread_followups") or {}).values():
+            if not isinstance(follow, dict):
+                continue
+            if str(follow.get("root_ts") or "") != str(record.get("ts") or args.ts):
+                continue
+            ping_ids.append(str(follow.get("author_id") or ""))
+        text = with_interested_mentions(text, *ping_ids)
         result = post_user_reply(client, channel_id, str(record.get("thread_ts") or record["ts"]), text, source)
         record["status"] = "completed"
         record["reply_ts"] = str(result.get("ts", ""))
