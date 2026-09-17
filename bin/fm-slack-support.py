@@ -606,16 +606,26 @@ def poll(args):
             try:
                 ims = list_im_channels(client)
                 state["dm_enabled"] = True
+                state.pop("dm_error", None)
+                skipped = 0
                 for im in ims:
                     im_id = str(im.get("id", ""))
                     if not im_id:
                         continue
-                    im_messages = fetch_messages(
-                        client,
-                        im_id,
-                        str((state.get("im_cursors") or {}).get(im_id, "")),
-                        max_messages,
-                    )
+                    try:
+                        im_messages = fetch_messages(
+                            client,
+                            im_id,
+                            str((state.get("im_cursors") or {}).get(im_id, "")),
+                            max_messages,
+                        )
+                    except SupportError as exc:
+                        # Closed/stale DMs often return channel_not_found; skip one, keep others.
+                        err = str(exc)
+                        if "channel_not_found" in err or "invalid_channel" in err:
+                            skipped += 1
+                            continue
+                        raise
                     ingest_messages(
                         home=home,
                         root=root,
@@ -629,9 +639,13 @@ def poll(args):
                         cursor_key="latest_ts",
                         output=output,
                     )
+                if skipped:
+                    # Local diagnostic only; do not wake firstmate every poll.
+                    pass
             except SupportError as exc:
                 state["dm_enabled"] = False
                 state["dm_error"] = str(exc)
+                # Only surface hard DM disable (missing scopes), not per-IM skips.
                 output.append("dm-disabled: " + str(exc))
         # Firstmate wakes for unannounced records.
         for ts, record in sorted(state["messages"].items()):
