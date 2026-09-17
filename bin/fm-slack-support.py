@@ -34,63 +34,66 @@ COSMETIC_TERMS = (
     "odstep", "literówka", "literowka", "wygląd", "wyglad", "wizual",
     "interfejs", "margines", "padding", "spacing",
 )
-HIGH_RISK_PATTERNS = (
+# Only these hold for firstmate/captain gate. Real bugs go to fenedo-os.
+HARD_HOLD_PATTERNS = (
     ("legal", "temat prawny / compliance"),
     ("gdpr", "prywatność / ochrona danych"),
     ("rodo", "prywatność / ochrona danych"),
     ("privacy", "prywatność / ochrona danych"),
     ("prywatn", "prywatność / ochrona danych"),
-    ("security", "bezpieczeństwo"),
-    ("bezpieczen", "bezpieczeństwo"),
-    ("vulnerability", "bezpieczeństwo"),
-    ("password", "dane logowania / dostęp"),
-    ("hasło", "dane logowania / dostęp"),
-    ("haslo", "dane logowania / dostęp"),
-    ("token", "dane logowania / dostęp"),
-    ("permission", "uprawnienia / dostęp"),
-    ("uprawnien", "uprawnienia / dostęp"),
-    ("delete", "żądanie destrukcyjne"),
-    ("delet", "żądanie destrukcyjne"),
-    ("usuń", "żądanie destrukcyjne"),
-    ("usun", "żądanie destrukcyjne"),
-    ("remove all", "żądanie destrukcyjne"),
-    ("refund", "temat finansowy"),
-    ("invoice", "temat finansowy"),
-    ("faktur", "temat finansowy"),
-    ("payment", "temat finansowy"),
-    ("płatno", "temat finansowy"),
-    ("platno", "temat finansowy"),
-    ("charge", "temat finansowy"),
-    ("price", "cena / decyzja produktowa"),
-    ("pricing", "cena / decyzja produktowa"),
-    ("ceny", "cena / decyzja produktowa"),
-    ("offer generation", "zachowanie oferty / produkt"),
-    ("generate offer", "zachowanie oferty / produkt"),
-    ("generowani oferty", "zachowanie oferty / produkt"),
-    ("generowanie oferty", "zachowanie oferty / produkt"),
-    ("feature", "prośba produktowa"),
-    ("funkcj", "prośba produktowa"),
-    ("roadmap", "prośba produktowa"),
-    ("should we", "decyzja wymagająca Dominika"),
-    ("decide", "decyzja wymagająca Dominika"),
-    ("zdecyduj", "decyzja wymagająca Dominika"),
-    ("urgent", "pilne — decyzja Dominika"),
-    ("pilne", "pilne — decyzja Dominika"),
+    ("security", "incydent bezpieczeństwa"),
+    ("bezpieczenstw", "incydent bezpieczeństwa"),
+    ("vulnerability", "incydent bezpieczeństwa"),
+    ("password", "sekret / dane logowania"),
+    ("hasło", "sekret / dane logowania"),
+    ("haslo", "sekret / dane logowania"),
+    ("api key", "sekret / dane logowania"),
+    ("token xox", "sekret / dane logowania"),
+    ("delete all", "żądanie destrukcyjne"),
+    ("usuń wszystko", "żądanie destrukcyjne"),
+    ("usun wszystko", "żądanie destrukcyjne"),
+    ("drop table", "żądanie destrukcyjne"),
+    ("refund", "zwrot / płatność — bramka właściciela"),
+    ("charge customer", "płatność klienta — bramka właściciela"),
+    ("zmień cen", "zmiana cennika — bramka właściciela"),
+    ("change price", "zmiana cennika — bramka właściciela"),
+    ("write to pipedrive", "zapis do Pipedrive — bramka właściciela"),
+    ("zapisz w pipedrive", "zapis do Pipedrive — bramka właściciela"),
+    ("pipedrive write", "zapis do Pipedrive — bramka właściciela"),
+    ("wyślij do klienta", "wiadomość do klienta — bramka właściciela"),
+    ("wyslij do klienta", "wiadomość do klienta — bramka właściciela"),
+    ("wyślij mail", "wiadomość do klienta — bramka właściciela"),
+    ("wyslij mail", "wiadomość do klienta — bramka właściciela"),
+    ("do klienta", "wiadomość do klienta — bramka właściciela"),
+    ("send to customer", "wiadomość do klienta — bramka właściciela"),
+    ("email the customer", "wiadomość do klienta — bramka właściciela"),
+)
+
+# Cues that this is a real operational bug (route to fenedo-os).
+OPERATIONAL_BUG_CUES = (
+    "nie działa", "nie dziala", "error", "błąd", "blad", "exception", "traceback",
+    "500", "404", "timeout", "cras", "wisi", "zawies", "nie generu", "generuje",
+    "oferta", "offer", "measurement", "pomiar", "karta pomiar", "pipedrive",
+    "sync", "synchron", "integrac", "połączen", "polaczen", "connection",
+    "login", "logowan", "nie mogę", "nie moge", "broken", "fail", "stack",
+    "console", "screenshot", "zrzut",
 )
 
 # User-facing Polish templates (no LLM).
 REPLY_ACK_COSMETIC = (
-    "Przyjąłem zgłoszenie. Wygląda na kosmetykę/UI — oddaję do Fenedo OS. "
+    "Przyjąłem. Oddaję do kolejki naprawy Fenedo OS (kosmetyka/UI). "
     "Odpiszę w tym wątku, gdy będzie gotowe."
 )
+REPLY_ACK_OPERATIONAL = (
+    "Przyjąłem. Oddaję do kolejki naprawy Fenedo OS (diagnoza/fix). "
+    "Odpiszę w tym wątku, gdy będzie aktualizacja."
+)
 REPLY_ACK_HELD = (
-    "Przyjąłem. Ten temat nie idzie automatycznie do fixa "
-    "(produkt / finanse / bezpieczeństwo / decyzja) — eskaluję do Dominika."
+    "Przyjąłem. Ten temat trafia do kolejki poprawy z ręcznym przeglądem "
+    "(bezpieczeństwo / sekrety / destrukcja / płatności / zapis zewnętrzny / decyzja). "
+    "Nie lecę z tym automatycznie jako zwykły fix."
 )
 REPLY_COMPLETE_DEFAULT = "Naprawione po stronie Fenedo OS."
-REPLY_DM_HINT = (
-    "Możesz też napisać do mnie prywatnie (DM), jeśli temat nie powinien iść na kanał."
-)
 
 
 class SupportError(Exception):
@@ -147,106 +150,28 @@ def ts_key(ts: str) -> str:
 
 
 def classify(text: str):
+    """Return (classification, reason).
+
+    operational  -> queue fenedo-os for diagnosis/fix (real support traffic)
+    cosmetic     -> queue fenedo-os (UI/copy only; rare but cheap)
+    needs-human  -> hold for firstmate (destructive, secrets, money write, legal)
+    """
     lowered = " ".join((text or "").lower().split())
-    for needle, reason in HIGH_RISK_PATTERNS:
+    # Hard gates: never auto-fix without human gate.
+    for needle, reason in HARD_HOLD_PATTERNS:
         if needle in lowered:
             return "needs-human", reason
+    # Explicit cosmetic-only cues (optional fast path).
     if any(re.search(r"\b" + re.escape(term) + r"\b", lowered) for term in COSMETIC_TERMS):
-        return "cosmetic", "limited to a likely visual or copy change"
-    return "needs-human", "not clearly a cosmetic safe fix"
+        # If it also looks like a broken feature, prefer operational.
+        if any(k in lowered for k in OPERATIONAL_BUG_CUES):
+            return "operational", "zgłoszenie błędu / nie działa (kolejka Fenedo OS)"
+        return "cosmetic", "kosmetyka / UI / copy"
+    # Default real support: operational bug queue, not captain.
+    if any(k in lowered for k in OPERATIONAL_BUG_CUES) or len(lowered) >= 12:
+        return "operational", "zgłoszenie operacyjne / błąd (kolejka Fenedo OS)"
+    return "operational", "zgłoszenie supportowe (kolejka Fenedo OS)"
 
-
-class SlackClient:
-    def __init__(self, token: str, base_url: str, timeout: int):
-        self.token = token
-        self.base_url = base_url.rstrip("/")
-        self.timeout = timeout
-
-    def call(self, method: str, params=None, payload=None):
-        if payload is None:
-            query = urllib.parse.urlencode(params or {})
-            url = self.base_url + "/" + method + ("?" + query if query else "")
-            request = urllib.request.Request(url, method="GET")
-        else:
-            url = self.base_url + "/" + method
-            body = json.dumps(payload).encode("utf-8")
-            request = urllib.request.Request(url, data=body, method="POST")
-            request.add_header("Content-Type", "application/json; charset=utf-8")
-        request.add_header("Authorization", "Bearer " + self.token)
-        try:
-            with urllib.request.urlopen(request, timeout=self.timeout) as response:
-                raw = response.read()
-        except urllib.error.HTTPError as exc:
-            raise SupportError("Slack API HTTP error " + str(exc.code)) from None
-        except (urllib.error.URLError, TimeoutError, OSError) as exc:
-            detail = getattr(exc, "reason", None) or exc.__class__.__name__
-            raise SupportError("Slack API connection failed: " + str(detail)) from None
-        try:
-            result = json.loads(raw.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError):
-            raise SupportError("Slack API returned invalid JSON") from None
-        if not isinstance(result, dict) or not result.get("ok"):
-            error = result.get("error", "unknown error") if isinstance(result, dict) else "invalid response"
-            raise SupportError("Slack API rejected the request: " + str(error))
-        return result
-
-    def paged(self, method: str, key: str, params=None):
-        params = dict(params or {})
-        rows = []
-        cursor = ""
-        while True:
-            query = dict(params)
-            query["limit"] = query.get("limit", 200)
-            if cursor:
-                query["cursor"] = cursor
-            result = self.call(method, query)
-            rows.extend(result.get(key, []))
-            cursor = (((result.get("response_metadata") or {}).get("next_cursor")) or "").strip()
-            if not cursor:
-                return rows
-
-
-class SupportStore:
-    def __init__(self, home: Path):
-        self.root = home / "state" / "slack-support"
-        self.root.mkdir(mode=0o700, parents=True, exist_ok=True)
-        self.path = self.root / "state.json"
-        self.lock_path = self.root / "poll.lock"
-
-    def load(self):
-        if not self.path.exists():
-            return {"schema": SCHEMA, "latest_ts": "", "messages": {}}
-        try:
-            state = json.loads(self.path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            raise SupportError("state/slack-support/state.json is unreadable") from None
-        if state.get("schema") != SCHEMA or not isinstance(state.get("messages"), dict):
-            raise SupportError("state/slack-support/state.json has an unsupported schema")
-        return state
-
-    def save(self, state):
-        fd, name = tempfile.mkstemp(prefix=".state-", dir=self.root)
-        try:
-            os.fchmod(fd, 0o600)
-            with os.fdopen(fd, "w", encoding="utf-8") as stream:
-                json.dump(state, stream, ensure_ascii=False, sort_keys=True, indent=2)
-                stream.write("\n")
-            os.replace(name, self.path)
-        finally:
-            try:
-                os.unlink(name)
-            except FileNotFoundError:
-                pass
-
-    def lock(self):
-        handle = self.lock_path.open("a+")
-        os.chmod(self.lock_path, 0o600)
-        try:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            handle.close()
-            raise SupportError("another Slack support poll is already running") from None
-        return handle
 
 
 def reporter_name(user: dict) -> str:
@@ -371,6 +296,8 @@ def post_user_reply(client: SlackClient, channel_id: str, thread_ts: str, text: 
 def ack_text(classification: str) -> str:
     if classification == "cosmetic":
         return REPLY_ACK_COSMETIC
+    if classification == "operational":
+        return REPLY_ACK_OPERATIONAL
     return REPLY_ACK_HELD
 
 
@@ -402,7 +329,9 @@ def task_body(record: dict) -> str:
         [
             "Slack support report for the fenedo-os writer.",
             "",
-            "Only make a safe cosmetic or copy fix; stop and hold for firstmate if the scope changes.",
+            "Default: diagnose and fix the reported operational bug in fenedo-os.",
+            "Safe, reversible product fixes are in scope. Stop and hold for firstmate if the work needs",
+            "production writes, Pipedrive writes, customer messages, payments, secrets, or legal calls.",
             "",
             "Reporter: " + record["author"],
             "Source: " + source + (" (private DM)" if source == "im" else " (channel)"),
@@ -416,7 +345,7 @@ def task_body(record: dict) -> str:
     )
 
 
-def route_cosmetic(home: Path, root: Path, record: dict) -> str:
+def route_to_fenedo(home: Path, root: Path, record: dict) -> str:
     task_id = "slack-support-" + ts_key(record["ts"])
     (home / "data").mkdir(mode=0o700, parents=True, exist_ok=True)
     body_path = home / "state" / "slack-support" / (task_id + ".md")
@@ -425,12 +354,14 @@ def route_cosmetic(home: Path, root: Path, record: dict) -> str:
     tasks = root / "bin" / "fm-tasks-axi.sh"
     if not tasks.is_file():
         raise SupportError("the fenedo-os route helper is missing: bin/fm-tasks-axi.sh")
+    kind = record.get("classification") or "operational"
+    prefix = "Fenedo support bug: " if kind == "operational" else "Fenedo support UI: "
     result = subprocess.run(
         [
             str(tasks),
             "add",
             task_id,
-            "Fenedo support: " + compact(record["text"], 100),
+            prefix + compact(record["text"], 100),
             "--kind",
             "ship",
             "--repo",
@@ -521,17 +452,24 @@ def ingest_messages(
             record["acked"] = True
         except SupportError as exc:
             record["ack_error"] = str(exc)
-        if classification == "cosmetic":
+        if classification in ("cosmetic", "operational"):
             try:
-                record["task_id"] = route_cosmetic(home, root, record)
+                record["task_id"] = route_to_fenedo(home, root, record)
                 record["status"] = "queued-for-fenedo-os"
                 output.append(
-                    "cosmetic " + ts + " (" + source + ") queued as " + record["task_id"] + " for fenedo-os"
+                    classification
+                    + " "
+                    + ts
+                    + " ("
+                    + source
+                    + ") queued as "
+                    + record["task_id"]
+                    + " for fenedo-os"
                 )
             except SupportError as exc:
                 record["status"] = "route-pending"
                 record["route_error"] = str(exc)
-                output.append("cosmetic " + ts + " held: " + str(exc))
+                output.append(classification + " " + ts + " held: " + str(exc))
         else:
             output.append("needs-human " + ts + " (" + source + "): " + reason)
         state["messages"][ts] = record
@@ -570,7 +508,7 @@ def poll(args):
             if record.get("status") != "route-pending":
                 continue
             try:
-                record["task_id"] = route_cosmetic(home, root, record)
+                record["task_id"] = route_to_fenedo(home, root, record)
                 record["status"] = "queued-for-fenedo-os"
                 record.pop("route_error", None)
                 output.append(

@@ -652,8 +652,8 @@ A budget that is not a whole number from 1 to 120 is still refused outright.
 ## Fenedo Slack support (.env)
 
 The Fenedo Slack support poller (bin/fm-slack-support.sh) reads new messages from the configured support channel. By default it considers reports from the whole workspace team (every non-bot human). Set SLACK_SUPPORT_REPORTERS to a comma-separated name list to narrow that allowlist, or keep all/* for the whole team.
-It classifies an explicitly cosmetic or copy-only report as safe, queues a `fenedo-os` ship item for the normal writer route, and publishes a durable firstmate check wake.
-Product behavior, offer generation, invoices, financial matters, legal or privacy matters, destructive requests, security matters, and anything ambiguous are held for firstmate instead of being routed.
+It classifies ordinary operational bugs (offer failures, errors, measurement, Pipedrive/sync symptoms, etc.) and cosmetic UI reports as `fenedo-os` ship items for the normal writer route, and publishes a durable firstmate check wake.
+Only hard gates are held for firstmate: secrets, destructive wipes, security incidents, customer-message sends, owner-level payment/price changes, and explicit external writes (for example Pipedrive write).
 The poller uses Slack's Web API over standard-library HTTPS and no paid API.
 User-facing bot replies are Polish by default (ack on intake and completion text).
 The `complete` command posts the completion reply in the original channel thread or DM after the queued fix lands.
