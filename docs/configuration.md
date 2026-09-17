@@ -2,6 +2,16 @@
 
 The files and environment variables you set to operate firstmate.
 
+## Hotel bot MVP (config/hotel-bot.env and state/hotel)
+
+The optional `bin/fm-hotel-bot.sh` workflow handles Polish hotel requests from Slack channel `#hotele` using the existing `SLACK_BOT_TOKEN`.
+Set `FM_HOTEL_CHANNEL_ID` to the channel ID and run `bin/fm-hotel-bot.sh poll` from a scheduler to persist privacy-safe intents under `state/hotel/`.
+The parser accepts an explicit address or city and otherwise routes a client name to a read-only Pipedrive lookup owned by the caller.
+Zero or multiple Pipedrive matches must be clarified before a Booking shortlist is prepared.
+The shortlist command accepts a JSON file of already-fetched Booking results, prints at most three links, and includes the fixed criteria of breakfast, parking, card payment, about 400 PLN, score at least 8, Booking, and about 5 km.
+The finish command produces a captain-only Awios-to-Booking checklist and never logs in, pays, or writes to Pipedrive.
+Guest details belong only in the local gitignored `config/hotel-guest.env` file and must not be copied into Slack or Pipedrive lookup output.
+
 ## Orchestrator behavior (AGENTS.md)
 
 The shared orchestrator behavior lives in [`AGENTS.md`](../AGENTS.md) - edit it like any prompt when the fleet is empty, or dispatch shared-repo edits to a crewmate while tasks are in flight.
