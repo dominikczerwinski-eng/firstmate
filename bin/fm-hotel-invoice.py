@@ -40,16 +40,15 @@ def load_env(home: Path) -> dict[str, str]:
 
 
 def year_base(root: Path, year: int) -> Path:
-    # Match existing folder name style with possible unicode normalization
-    direct = root / f"{year} faktury zakupowe + wyciągi {year}"
-    if direct.is_dir():
-        return direct
+    # Prefer an existing on-disk folder (macOS often stores NFD names in iCloud).
     for child in root.iterdir():
         if not child.is_dir():
             continue
         name = child.name
         if str(year) in name and "faktury" in name.casefold():
             return child
+    # Create only if missing entirely (NFC spelling; rare).
+    direct = root / f"{year} faktury zakupowe + wyciągi {year}"
     direct.mkdir(parents=True, exist_ok=True)
     return direct
 
