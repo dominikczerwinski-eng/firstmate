@@ -72,15 +72,14 @@ PY
 finish() {
   local index="$1" place="$2"
   [[ "$index" =~ ^[1-3]$ ]] || die "numer hotelu musi być od 1 do 3"
+  # Concise captain ping only — no Awios tutorial checklist.
+  local captain="${HOTEL_CAPTAIN_SLACK_ID:-U0BK3DW0ZL2}"
+  local guest_name
+  guest_name=$(grep -E '^HOTEL_GUEST_NAME=' "${FM_HOME:-$ROOT}/config/hotel-guest.env" 2>/dev/null | cut -d= -f2- || echo "Sebastian Waloch")
   cat <<EOF
-Wybrano hotel nr $index dla $place.
-
-Pakiet dla kapitana (Awios → Booking):
-- [ ] Otwórz link Booking z shortlisty i potwierdź daty, cenę oraz politykę anulowania.
-- [ ] W Awios wyszukaj punkty/ref sesję dla tej samej trasy i terminu.
-- [ ] Przekaż rezerwację ręcznie na dane gościa zapisane lokalnie w konfiguracji.
-- [ ] Potwierdź, że płatność kartą jest dostępna; bot nie płaci automatycznie.
-- [ ] Odeślij Sebastianowi wyłącznie potwierdzenie i link Booking, bez danych klienta z Pipedrive.
+<@${captain}> wybrany hotel nr ${index} · ${place}
+Gość: ${guest_name}
+(link Booking w shortliście / last-pick)
 EOF
 }
 
