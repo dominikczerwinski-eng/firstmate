@@ -365,6 +365,143 @@ def fetch_messages(client: SlackClient, channel_id: str, latest_ts: str, limit: 
     return client.paged("conversations.history", "messages", params)
 
 
+def fetch_thread_replies(client: SlackClient, channel_id: str, thread_ts: str, limit: int = 50):
+    """Return replies in one Slack thread (includes the root)."""
+    result = client.call(
+        "conversations.replies",
+        {"channel": channel_id, "ts": thread_ts, "limit": str(limit)},
+    )
+    rows = result.get("messages") or []
+    return rows if isinstance(rows, list) else []
+
+
+def bot_user_id(client: SlackClient) -> str:
+    auth = client.call("auth.test", {})
+    return str(auth.get("user_id") or "")
+
+
+def message_mentions_bot(text: str, bot_uid: str) -> bool:
+    if not text or not bot_uid:
+        return False
+    if "<@" + bot_uid + ">" in text:
+        return True
+    lowered = text.casefold()
+    return bool(re.search(r"\bfenek\b", lowered))
+
+
+def scan_open_thread_followups(
+    *,
+    client: SlackClient,
+    state: dict,
+    users: dict,
+    bot_uid: str,
+    output: list,
+    # home/root unused here; wake publication happens in poll() after scan.
+):
+    """Pick up @Fenek pings inside open ticket threads (channel history misses them).
+
+    Top-level poll only advances on channel roots. Human follow-ups that @mention
+    the bot live only as thread replies, so without this scan Fenek stays silent
+    after the first ack/result.
+    """
+    terminal = {"completed", "dismissed", "done"}
+    for root_ts, record in list((state.get("messages") or {}).items()):
+        if not isinstance(record, dict):
+            continue
+        if str(record.get("status") or "") in terminal:
+            continue
+        if str(record.get("source") or "channel") == "im":
+            # DMs are single-conversation; history already covers them.
+            continue
+        channel_id = str(record.get("channel_id") or state.get("channel_id") or "")
+        thread_ts = str(record.get("thread_ts") or root_ts)
+        if not channel_id or not thread_ts:
+            continue
+        try:
+            replies = fetch_thread_replies(client, channel_id, thread_ts)
+        except SupportError as exc:
+            output.append("thread-scan " + root_ts + ": " + str(exc))
+            continue
+        last_seen = str(record.get("thread_latest_ts") or root_ts)
+        handled = set(record.get("thread_handled_ts") or [])
+        if not isinstance(handled, set):
+            handled = set(handled)
+        max_seen = last_seen
+        for reply in replies:
+            rts = str(reply.get("ts") or "")
+            if not rts or rts == root_ts:
+                continue
+            max_seen = max(max_seen, rts)
+            if rts <= last_seen or rts in handled:
+                continue
+            if reply.get("bot_id") or reply.get("subtype") in (
+                "bot_message",
+                "channel_join",
+                "channel_leave",
+            ):
+                handled.add(rts)
+                continue
+            text = str(reply.get("text") or "").strip()
+            user_id = str(reply.get("user") or "")
+            if user_id == bot_uid:
+                handled.add(rts)
+                continue
+            if not message_mentions_bot(text, bot_uid):
+                # Track non-mention human chatter so we do not re-scan forever,
+                # but do not wake on it.
+                handled.add(rts)
+                continue
+            author = users.get(user_id) or ("user:" + user_id if user_id else "unknown")
+            follow_key = root_ts + ":" + rts
+            followups = state.setdefault("thread_followups", {})
+            if not isinstance(followups, dict):
+                followups = {}
+                state["thread_followups"] = followups
+            if follow_key in followups and followups[follow_key].get("announced"):
+                handled.add(rts)
+                continue
+            follow = {
+                "root_ts": root_ts,
+                "ts": rts,
+                "thread_ts": thread_ts,
+                "channel_id": channel_id,
+                "channel_label": record.get("channel_label") or "#support",
+                "author": author,
+                "author_id": user_id,
+                "text": text,
+                "parent_task_id": record.get("task_id") or "",
+                "parent_status": record.get("status") or "",
+                "received_at": utc_now(),
+                "status": "thread-followup",
+                "announced": False,
+                "acked": False,
+            }
+            try:
+                ack = post_user_reply(
+                    client,
+                    channel_id,
+                    thread_ts,
+                    "Widzę follow-up w wątku — czytam i wrócę z odpowiedzią.",
+                    "channel",
+                )
+                follow["ack_ts"] = str(ack.get("ts", ""))
+                follow["acked"] = True
+            except SupportError as exc:
+                follow["ack_error"] = str(exc)
+            followups[follow_key] = follow
+            handled.add(rts)
+            output.append(
+                "thread-followup "
+                + root_ts
+                + " reply "
+                + rts
+                + " from "
+                + author
+            )
+        record["thread_latest_ts"] = max_seen
+        record["thread_handled_ts"] = sorted(handled)
+
+
 def list_im_channels(client: SlackClient):
     """Return DM conversations the bot is in. Raises SupportError on missing_scope."""
     try:
@@ -630,6 +767,19 @@ def poll(args):
             cursor_key="latest_ts",
             output=output,
         )
+        # Thread follow-ups that @mention Fenek (not visible as channel roots).
+        try:
+            bot_uid = bot_user_id(client)
+        except SupportError:
+            bot_uid = ""
+        if bot_uid:
+            scan_open_thread_followups(
+                client=client,
+                state=state,
+                users=users,
+                bot_uid=bot_uid,
+                output=output,
+            )
         # Private DMs (optional; requires im:* scopes).
         state["dm_enabled"] = False
         state.pop("dm_error", None)
@@ -678,6 +828,33 @@ def poll(args):
                 state["dm_error"] = str(exc)
                 # Only surface hard DM disable (missing scopes), not per-IM skips.
                 output.append("dm-disabled: " + str(exc))
+        # Firstmate wakes for unannounced thread follow-ups (@Fenek in open tickets).
+        for fkey, follow in sorted((state.get("thread_followups") or {}).items()):
+            if not isinstance(follow, dict) or follow.get("announced"):
+                continue
+            payload = (
+                "Slack support thread-followup root="
+                + str(follow.get("root_ts") or "")
+                + " reply="
+                + str(follow.get("ts") or "")
+                + " from "
+                + str(follow.get("author") or "?")
+                + ": "
+                + compact(str(follow.get("text") or ""), 160)
+            )
+            try:
+                announce(
+                    home,
+                    root,
+                    "slack-support-followup:" + str(follow.get("ts") or fkey),
+                    payload,
+                )
+                follow["announced"] = True
+                follow["announced_at"] = utc_now()
+                output.append("wake: " + payload)
+            except SupportError as exc:
+                follow["announce_error"] = str(exc)
+                output.append("wake pending for followup " + fkey + ": " + str(exc))
         # Firstmate wakes for unannounced records.
         for ts, record in sorted(state["messages"].items()):
             if record.get("announced"):
