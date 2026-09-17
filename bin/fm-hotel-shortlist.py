@@ -27,7 +27,7 @@ def http_json(url: str, data: bytes | None = None, timeout: int = 25) -> dict | 
 
 
 def re_berlin_mitte(place: str) -> bool:
-    return bool(_re.search(r"berlin\s*mitte", place or "", _re.I))
+    return bool(_re.search(r"berlin\s*mitte", place or "", __re.I))
 
 
 def geocode(place: str) -> tuple[float, float, str]:
@@ -92,7 +92,69 @@ def overpass_hotels(lat: float, lon: float, radius_m: int = 1500) -> list[dict]:
     return out
 
 
-def booking_url(hotel_name: str, place: str, checkin: str, checkout: str) -> str:
+def _slug(name: str) -> str:
+    s = name.lower()
+    for a, b in (("ä", "ae"), ("ö", "oe"), ("ü", "ue"), ("ß", "ss"), ("’", ""), ("'", "")):
+        s = s.replace(a, b)
+    s = _re.sub(r"[^a-z0-9]+", "-", s)
+    return s.strip("-")
+
+
+def booking_hotel_page(hotel_name: str, place: str, checkin: str, checkout: str) -> str:
+    """Prefer a direct /hotel/... card URL; fall back to name search."""
+    params = urllib.parse.urlencode(
+        {
+            "checkin": checkin,
+            "checkout": checkout,
+            "group_adults": 1,
+            "no_rooms": 1,
+            "selected_currency": "EUR",
+        }
+    )
+    slug = _slug(hotel_name)
+    # Germany-first; other countries still get a useful search fallback.
+    country = "de"
+    if _re.search(r"\b(poland|polska|warsaw|warszawa|krakow|kraków)\b", place or "", __re.I):
+        country = "pl"
+    candidates = [
+        f"https://www.booking.com/hotel/{country}/{slug}.pl.html",
+        f"https://www.booking.com/hotel/{country}/{slug}.html",
+        f"https://www.booking.com/hotel/de/{slug}.pl.html",
+        f"https://www.booking.com/hotel/de/{slug}.html",
+    ]
+    for url in candidates:
+        try:
+            req = urllib.request.Request(
+                url,
+                headers={
+                    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+                    "Accept-Language": "pl-PL,pl;q=0.9",
+                },
+                method="HEAD",
+            )
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                final = resp.geturl()
+            if "/hotel/" in final and "searchresults" not in final:
+                return final.split("#")[0].split("?")[0] + "?" + params
+        except Exception:
+            # Some CDNs reject HEAD; try a light GET path probe via open of .pl.html only once.
+            continue
+    # GET probe first candidate (Booking sometimes needs GET)
+    for url in candidates[:2]:
+        try:
+            req = urllib.request.Request(
+                url,
+                headers={
+                    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+                    "Accept-Language": "pl-PL,pl;q=0.9",
+                },
+            )
+            with urllib.request.urlopen(req, timeout=12) as resp:
+                final = resp.geturl()
+            if "/hotel/" in final and "searchresults" not in final:
+                return final.split("#")[0].split("?")[0] + "?" + params
+        except Exception:
+            continue
     ss = f"{hotel_name}, {place}"
     return "https://www.booking.com/searchresults.pl.html?" + urllib.parse.urlencode(
         {
@@ -105,6 +167,10 @@ def booking_url(hotel_name: str, place: str, checkin: str, checkout: str) -> str
             "nflt": "review_score=80;mealplan=1",
         }
     )
+
+
+def booking_url(hotel_name: str, place: str, checkin: str, checkout: str) -> str:
+    return booking_hotel_page(hotel_name, place, checkin, checkout)
 
 
 def shortlist(
@@ -159,7 +225,7 @@ def render_slack(rows: list[dict], place: str) -> str:
         stars = f", gwiazdki {row['stars']:g}" if row.get("stars") else ""
         lines.append(
             f"{i}. *{row['name']}* — ok. {row.get('distance_km', '?')} km{stars}\n"
-            f"   <{row['url']}|Booking – sprawdź cenę, ocenę ≥8, śniadanie, parking, kartę>"
+            f"   <{row['url']}|Karta hotelu na Booking (cena, ocena ≥8, śniadanie, parking, karta)>"
         )
     lines += [
         "",
