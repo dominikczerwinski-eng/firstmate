@@ -24,7 +24,7 @@ from pathlib import Path
 
 SCHEMA = "fm-slack-support-v1"
 DEFAULT_CHANNEL = "support"
-DEFAULT_REPORTERS = ("martyna", "kasia")
+DEFAULT_REPORTERS = ("all",)
 COSMETIC_TERMS = (
     "alignment", "aligned", "button", "colour", "color", "copy", "css",
     "display", "font", "format", "icon", "label", "layout", "padding",
@@ -272,22 +272,35 @@ def resolve_channel(client: SlackClient, requested: str):
 
 def resolve_reporters(client: SlackClient, configured: str, explicit_ids: str):
     ids = {part.strip() for part in explicit_ids.split(",") if part.strip()}
-    if ids:
-        return {user_id: "user:" + user_id for user_id in ids}
-    wanted = {part.strip().casefold() for part in configured.split(",") if part.strip()}
+    wanted_raw = {part.strip() for part in configured.split(",") if part.strip()}
+    wanted = {part.casefold() for part in wanted_raw}
+    accept_all = (not ids) and (not wanted or wanted == {"all"} or wanted == {"*"})
     users = {}
     try:
         members = client.paged("users.list", "members", {})
     except SupportError as exc:
         if "missing_scope" in str(exc):
             raise SupportError(
-                "Slack app needs users:read to resolve Martyna/Kasia; "
+                "Slack app needs users:read to resolve reporters; "
                 "grant that scope or set SLACK_SUPPORT_REPORTER_IDS"
             ) from None
         raise
     for user in members:
-        if reporter_matches(user, wanted):
-            users[str(user.get("id"))] = reporter_name(user) or str(user.get("name", ""))
+        if user.get("deleted") or user.get("is_bot") or user.get("id") == "USLACKBOT":
+            continue
+        user_id = str(user.get("id", ""))
+        if not user_id:
+            continue
+        name = reporter_name(user) or str(user.get("name", "")) or ("user:" + user_id)
+        if ids:
+            if user_id in ids:
+                users[user_id] = name
+            continue
+        if accept_all or reporter_matches(user, wanted):
+            users[user_id] = name
+    if ids and not users:
+        # IDs configured but users.list could not name them: keep ID fallbacks.
+        return {user_id: "user:" + user_id for user_id in ids}
     return users
 
 
