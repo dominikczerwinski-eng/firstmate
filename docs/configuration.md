@@ -655,7 +655,9 @@ The Fenedo Slack support poller (bin/fm-slack-support.sh) reads new messages fro
 It classifies an explicitly cosmetic or copy-only report as safe, queues a `fenedo-os` ship item for the normal writer route, and publishes a durable firstmate check wake.
 Product behavior, offer generation, invoices, financial matters, legal or privacy matters, destructive requests, security matters, and anything ambiguous are held for firstmate instead of being routed.
 The poller uses Slack's Web API over standard-library HTTPS and no paid API.
-The `complete` command posts the short completion reply in the original Slack thread after the queued fix lands.
+User-facing bot replies are Polish by default (ack on intake and completion text).
+The `complete` command posts the completion reply in the original channel thread or DM after the queued fix lands.
+With DM enabled, the poller also reads direct messages to the bot (private topics that should not hit `#support`).
 It never creates a Slack app, invites a bot, or prints the bot token.
 The poller is off until the effective home's gitignored `.env` contains `SLACK_BOT_TOKEN`.
 Environment values override `.env` for direct invocations.
@@ -668,15 +670,22 @@ SLACK_BOT_TOKEN=xoxb-...
 
 The channel defaults to `support` and can be changed with `SLACK_SUPPORT_CHANNEL`.
 `SLACK_SUPPORT_REPORTERS` defaults to `all` (whole team). Set a comma-separated name list to narrow it, or `all`/`*` to keep every non-bot human.
-If the app cannot receive `users.list`, `SLACK_SUPPORT_REPORTER_IDS` can instead hold the comma-separated Slack user IDs for those two reporters.
+If the app cannot receive `users.list`, `SLACK_SUPPORT_REPORTER_IDS` can instead hold the comma-separated Slack user IDs for those reporters.
+`SLACK_SUPPORT_DM` defaults to `on`; set `off` to skip private DMs even when scopes exist.
 `SLACK_API_URL` is only for a local or test API endpoint and defaults to `https://slack.com/api`.
 `SLACK_SUPPORT_TIMEOUT` defaults to 20 seconds and `SLACK_SUPPORT_MAX_MESSAGES` defaults to 25 messages per poll.
 
-Set up the integration with these three human steps:
+Set up the integration with these human steps:
 
-1. In the Fenedo Slack workspace, create and install a bot app with `channels:read`, `channels:history`, `groups:read`, `groups:history`, `users:read`, and `chat:write` scopes, then copy its bot token.
-2. Invite that bot to `#support` (or the value of `SLACK_SUPPORT_CHANNEL`) and ensure the reporting team can post there.
-3. Put the token in the firstmate home's `.env` as `SLACK_BOT_TOKEN=<token>` and run `bin/fm-slack-support.sh poll` on a schedule; after a safe fix lands, run `bin/fm-slack-support.sh complete <message-ts> "Fixed in fenedo-os."`.
+1. In the Fenedo Slack workspace, open the Fenek app at https://api.slack.com/apps → select the app → **OAuth & Permissions** → **Bot Token Scopes**, and ensure at least:
+   - `channels:read`, `channels:history` (public `#support`)
+   - `groups:read`, `groups:history` (if `#support` is private)
+   - `users:read`
+   - `chat:write`
+   - for private DMs: `im:history`, `im:read`
+   Then **Reinstall to Workspace** and copy the bot token if it rotated.
+2. Invite that bot to `#support` (or the value of `SLACK_SUPPORT_CHANNEL`) and ensure the reporting team can post there. Teammates open a DM with Fenek for private topics.
+3. Put the token in the firstmate home's `.env` as `SLACK_BOT_TOKEN=<token>` and run `bin/fm-slack-support.sh poll` on a schedule; after a safe fix lands, run `bin/fm-slack-support.sh complete <message-ts>` (Polish default) or pass a custom Polish reply.
 
 The firstmate home must be able to run `tasks-axi` for cosmetic reports because the poller files their queued `fenedo-os` work item through `bin/fm-tasks-axi.sh`.
 If the bot is not yet in the channel, Slack returns that membership error and the captain must complete step 2.

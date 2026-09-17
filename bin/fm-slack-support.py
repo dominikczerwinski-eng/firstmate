@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Slack support poller for the Fenedo support channel.
+"""Slack support poller for Fenedo (#support + optional DMs).
 
-This module deliberately uses only Python's standard library.  It reads the
-Slack bot token from the effective firstmate home's .env file, never prints it,
-and keeps its cursor and message decisions in state/.slack-support/.
+Polish-first replies. Reads the bot token from the effective firstmate home's
+.env, never prints it, and keeps cursor/decisions in state/.slack-support/.
+DMs need Slack scopes im:history + im:read (and chat:write, already required).
 """
 
 import argparse
@@ -29,32 +29,67 @@ COSMETIC_TERMS = (
     "alignment", "aligned", "button", "colour", "color", "copy", "css",
     "display", "font", "format", "icon", "label", "layout", "padding",
     "spacing", "text", "typo", "visual", "wording", "ui", "ux",
+    # Polish cosmetic cues
+    "przycisk", "kolor", "czcionka", "etykieta", "układ", "uklad", "odstęp",
+    "odstep", "literówka", "literowka", "wygląd", "wyglad", "wizual",
+    "interfejs", "margines", "padding", "spacing",
 )
 HIGH_RISK_PATTERNS = (
-    ("legal", "legal or compliance request"),
-    ("gdpr", "privacy or data-protection request"),
-    ("privacy", "privacy or data-protection request"),
-    ("security", "security request"),
-    ("vulnerability", "security request"),
-    ("password", "credential or access request"),
-    ("token", "credential or access request"),
-    ("permission", "access-control request"),
-    ("delete", "destructive request"),
-    ("delet", "destructive request"),
-    ("remove all", "destructive request"),
-    ("refund", "financial request"),
-    ("invoice", "financial request"),
-    ("payment", "financial request"),
-    ("charge", "financial request"),
-    ("price", "pricing or product decision"),
-    ("pricing", "pricing or product decision"),
-    ("offer generation", "product behavior request"),
-    ("generate offer", "product behavior request"),
-    ("feature", "product request"),
-    ("roadmap", "product request"),
-    ("should we", "judgment call"),
-    ("decide", "judgment call"),
-    ("urgent", "priority judgment call"),
+    ("legal", "temat prawny / compliance"),
+    ("gdpr", "prywatność / ochrona danych"),
+    ("rodo", "prywatność / ochrona danych"),
+    ("privacy", "prywatność / ochrona danych"),
+    ("prywatn", "prywatność / ochrona danych"),
+    ("security", "bezpieczeństwo"),
+    ("bezpieczen", "bezpieczeństwo"),
+    ("vulnerability", "bezpieczeństwo"),
+    ("password", "dane logowania / dostęp"),
+    ("hasło", "dane logowania / dostęp"),
+    ("haslo", "dane logowania / dostęp"),
+    ("token", "dane logowania / dostęp"),
+    ("permission", "uprawnienia / dostęp"),
+    ("uprawnien", "uprawnienia / dostęp"),
+    ("delete", "żądanie destrukcyjne"),
+    ("delet", "żądanie destrukcyjne"),
+    ("usuń", "żądanie destrukcyjne"),
+    ("usun", "żądanie destrukcyjne"),
+    ("remove all", "żądanie destrukcyjne"),
+    ("refund", "temat finansowy"),
+    ("invoice", "temat finansowy"),
+    ("faktur", "temat finansowy"),
+    ("payment", "temat finansowy"),
+    ("płatno", "temat finansowy"),
+    ("platno", "temat finansowy"),
+    ("charge", "temat finansowy"),
+    ("price", "cena / decyzja produktowa"),
+    ("pricing", "cena / decyzja produktowa"),
+    ("ceny", "cena / decyzja produktowa"),
+    ("offer generation", "zachowanie oferty / produkt"),
+    ("generate offer", "zachowanie oferty / produkt"),
+    ("generowani oferty", "zachowanie oferty / produkt"),
+    ("generowanie oferty", "zachowanie oferty / produkt"),
+    ("feature", "prośba produktowa"),
+    ("funkcj", "prośba produktowa"),
+    ("roadmap", "prośba produktowa"),
+    ("should we", "decyzja wymagająca Dominika"),
+    ("decide", "decyzja wymagająca Dominika"),
+    ("zdecyduj", "decyzja wymagająca Dominika"),
+    ("urgent", "pilne — decyzja Dominika"),
+    ("pilne", "pilne — decyzja Dominika"),
+)
+
+# User-facing Polish templates (no LLM).
+REPLY_ACK_COSMETIC = (
+    "Przyjąłem zgłoszenie. Wygląda na kosmetykę/UI — oddaję do Fenedo OS. "
+    "Odpiszę w tym wątku, gdy będzie gotowe."
+)
+REPLY_ACK_HELD = (
+    "Przyjąłem. Ten temat nie idzie automatycznie do fixa "
+    "(produkt / finanse / bezpieczeństwo / decyzja) — eskaluję do Dominika."
+)
+REPLY_COMPLETE_DEFAULT = "Naprawione po stronie Fenedo OS."
+REPLY_DM_HINT = (
+    "Możesz też napisać do mnie prywatnie (DM), jeśli temat nie powinien iść na kanał."
 )
 
 
@@ -312,6 +347,33 @@ def fetch_messages(client: SlackClient, channel_id: str, latest_ts: str, limit: 
     return client.paged("conversations.history", "messages", params)
 
 
+def list_im_channels(client: SlackClient):
+    """Return DM conversations the bot is in. Raises SupportError on missing_scope."""
+    try:
+        return client.paged("conversations.list", "channels", {"types": "im", "exclude_archived": "true"})
+    except SupportError as exc:
+        if "missing_scope" in str(exc) or "not_allowed_token_type" in str(exc):
+            raise SupportError(
+                "DM support needs Slack scopes im:history and im:read "
+                "(reinstall the Fenek app after adding them); channel poll still works"
+            ) from None
+        raise
+
+
+def post_user_reply(client: SlackClient, channel_id: str, thread_ts: str, text: str, source: str):
+    payload = {"channel": channel_id, "text": text}
+    # Channel reports stay threaded; DMs reply in the DM conversation.
+    if source != "im" and thread_ts:
+        payload["thread_ts"] = thread_ts
+    return client.call("chat.postMessage", payload=payload)
+
+
+def ack_text(classification: str) -> str:
+    if classification == "cosmetic":
+        return REPLY_ACK_COSMETIC
+    return REPLY_ACK_HELD
+
+
 def announce(home: Path, root: Path, key: str, payload: str):
     helper = """
 set -eu
@@ -335,6 +397,7 @@ fm_wake_append check "$key" "$payload"
 
 
 def task_body(record: dict) -> str:
+    source = record.get("source", "channel")
     return "\n".join(
         [
             "Slack support report for the fenedo-os writer.",
@@ -342,6 +405,8 @@ def task_body(record: dict) -> str:
             "Only make a safe cosmetic or copy fix; stop and hold for firstmate if the scope changes.",
             "",
             "Reporter: " + record["author"],
+            "Source: " + source + (" (private DM)" if source == "im" else " (channel)"),
+            "Slack channel_id: " + str(record.get("channel_id", "")),
             "Slack thread: " + record["thread_ts"],
             "Classification: " + record["classification"],
             "Reason: " + record["reason"],
@@ -396,6 +461,88 @@ def ordered_new_messages(messages, latest_ts: str):
     return sorted(result, key=lambda item: str(item.get("ts", "")))
 
 
+def ingest_messages(
+    *,
+    home: Path,
+    root: Path,
+    client: SlackClient,
+    state: dict,
+    users: dict,
+    messages,
+    channel_id: str,
+    channel_label: str,
+    source: str,
+    cursor_key: str,
+    output: list,
+):
+    """Ingest new messages from one conversation into durable state."""
+    latest = str(state.get(cursor_key, "") or "")
+    if source == "im":
+        im_cursors = state.setdefault("im_cursors", {})
+        if not isinstance(im_cursors, dict):
+            im_cursors = {}
+            state["im_cursors"] = im_cursors
+        latest = str(im_cursors.get(channel_id, "") or "")
+    new_messages = ordered_new_messages(messages, latest)
+    max_ts = latest
+    for message in new_messages:
+        ts = str(message["ts"])
+        max_ts = max(max_ts, ts)
+        user_id = str(message.get("user", ""))
+        author = users.get(user_id)
+        if not author or message.get("subtype") or message.get("bot_id"):
+            continue
+        # Ignore the bot's own messages and bare empties.
+        text = str(message.get("text", "")).strip()
+        if not text:
+            continue
+        classification, reason = classify(text)
+        thread_ts = str(message.get("thread_ts") or ts)
+        record = {
+            "ts": ts,
+            "thread_ts": thread_ts,
+            "channel_id": channel_id,
+            "channel_label": channel_label,
+            "source": source,
+            "author": author,
+            "author_id": user_id,
+            "text": text,
+            "classification": classification,
+            "reason": reason,
+            "received_at": utc_now(),
+            "status": "held" if classification == "needs-human" else "routing",
+            "announced": False,
+            "acked": False,
+        }
+        # Polish user ack in-thread / in-DM (best-effort; never blocks routing).
+        try:
+            ack = post_user_reply(client, channel_id, thread_ts, ack_text(classification), source)
+            record["ack_ts"] = str(ack.get("ts", ""))
+            record["acked"] = True
+        except SupportError as exc:
+            record["ack_error"] = str(exc)
+        if classification == "cosmetic":
+            try:
+                record["task_id"] = route_cosmetic(home, root, record)
+                record["status"] = "queued-for-fenedo-os"
+                output.append(
+                    "cosmetic " + ts + " (" + source + ") queued as " + record["task_id"] + " for fenedo-os"
+                )
+            except SupportError as exc:
+                record["status"] = "route-pending"
+                record["route_error"] = str(exc)
+                output.append("cosmetic " + ts + " held: " + str(exc))
+        else:
+            output.append("needs-human " + ts + " (" + source + "): " + reason)
+        state["messages"][ts] = record
+    if source == "im":
+        if max_ts:
+            state.setdefault("im_cursors", {})[channel_id] = max_ts
+    else:
+        if max_ts:
+            state[cursor_key] = max_ts
+
+
 def poll(args):
     home = Path(args.home).resolve()
     root = Path(args.root).resolve()
@@ -408,6 +555,8 @@ def poll(args):
     timeout = safe_int(config_value("SLACK_SUPPORT_TIMEOUT", home, "20"), 20, 5, 60)
     max_messages = safe_int(config_value("SLACK_SUPPORT_MAX_MESSAGES", home, "25"), 25, 1, 100)
     base_url = config_value("SLACK_API_URL", home, "https://slack.com/api")
+    dm_enabled_cfg = config_value("SLACK_SUPPORT_DM", home, "on").strip().casefold()
+    want_dm = dm_enabled_cfg not in ("0", "off", "false", "no")
     store = SupportStore(home)
     lock = store.lock()
     try:
@@ -415,12 +564,8 @@ def poll(args):
         client = SlackClient(token, base_url, timeout)
         channel = resolve_channel(client, channel_name)
         users = resolve_reporters(client, reporters_setting, reporter_ids)
-        messages = fetch_messages(client, str(channel["id"]), str(state.get("latest_ts", "")), max_messages)
-        new_messages = ordered_new_messages(messages, str(state.get("latest_ts", "")))
-        state["channel_id"] = channel["id"]
-        state["channel_name"] = channel.get("name", channel_name)
-        state["reporters"] = sorted(users.values())
         output = []
+        # Retry route-pending cosmetics first.
         for record in state["messages"].values():
             if record.get("status") != "route-pending":
                 continue
@@ -428,48 +573,81 @@ def poll(args):
                 record["task_id"] = route_cosmetic(home, root, record)
                 record["status"] = "queued-for-fenedo-os"
                 record.pop("route_error", None)
-                output.append("cosmetic " + record["ts"] + " queued as " + record["task_id"] + " for fenedo-os")
+                output.append(
+                    "cosmetic " + record["ts"] + " queued as " + record["task_id"] + " for fenedo-os"
+                )
             except SupportError as exc:
                 record["route_error"] = str(exc)
-        for message in new_messages:
-            ts = str(message["ts"])
-            state["latest_ts"] = max(str(state.get("latest_ts", "")), ts)
-            user_id = str(message.get("user", ""))
-            author = users.get(user_id)
-            if not author or message.get("subtype") or message.get("bot_id"):
-                continue
-            text = str(message.get("text", "")).strip()
-            if not text:
-                continue
-            classification, reason = classify(text)
-            record = {
-                "ts": ts,
-                "thread_ts": str(message.get("thread_ts") or ts),
-                "author": author,
-                "text": text,
-                "classification": classification,
-                "reason": reason,
-                "received_at": utc_now(),
-                "status": "held" if classification == "needs-human" else "routing",
-                "announced": False,
-            }
-            if classification == "cosmetic":
-                try:
-                    record["task_id"] = route_cosmetic(home, root, record)
-                    record["status"] = "queued-for-fenedo-os"
-                    output.append("cosmetic " + ts + " queued as " + record["task_id"] + " for fenedo-os")
-                except SupportError as exc:
-                    record["status"] = "route-pending"
-                    record["route_error"] = str(exc)
-                    output.append("cosmetic " + ts + " held: " + str(exc))
-            else:
-                output.append("needs-human " + ts + ": " + reason)
-            state["messages"][ts] = record
-
+        # Public support channel.
+        channel_id = str(channel["id"])
+        channel_messages = fetch_messages(
+            client, channel_id, str(state.get("latest_ts", "")), max_messages
+        )
+        state["channel_id"] = channel_id
+        state["channel_name"] = channel.get("name", channel_name)
+        state["reporters"] = sorted(users.values())
+        ingest_messages(
+            home=home,
+            root=root,
+            client=client,
+            state=state,
+            users=users,
+            messages=channel_messages,
+            channel_id=channel_id,
+            channel_label="#" + str(channel.get("name", channel_name)),
+            source="channel",
+            cursor_key="latest_ts",
+            output=output,
+        )
+        # Private DMs (optional; requires im:* scopes).
+        state["dm_enabled"] = False
+        state.pop("dm_error", None)
+        if want_dm:
+            try:
+                ims = list_im_channels(client)
+                state["dm_enabled"] = True
+                for im in ims:
+                    im_id = str(im.get("id", ""))
+                    if not im_id:
+                        continue
+                    im_messages = fetch_messages(
+                        client,
+                        im_id,
+                        str((state.get("im_cursors") or {}).get(im_id, "")),
+                        max_messages,
+                    )
+                    ingest_messages(
+                        home=home,
+                        root=root,
+                        client=client,
+                        state=state,
+                        users=users,
+                        messages=im_messages,
+                        channel_id=im_id,
+                        channel_label="dm:" + im_id,
+                        source="im",
+                        cursor_key="latest_ts",
+                        output=output,
+                    )
+            except SupportError as exc:
+                state["dm_enabled"] = False
+                state["dm_error"] = str(exc)
+                output.append("dm-disabled: " + str(exc))
+        # Firstmate wakes for unannounced records.
         for ts, record in sorted(state["messages"].items()):
             if record.get("announced"):
                 continue
-            payload = "Slack support " + record["status"] + " from " + record["author"] + ": " + compact(record["text"])
+            src = record.get("source", "channel")
+            payload = (
+                "Slack support "
+                + record["status"]
+                + " ("
+                + src
+                + ") from "
+                + record["author"]
+                + ": "
+                + compact(record["text"])
+            )
             try:
                 announce(home, root, "slack-support:" + ts, payload)
                 record["announced"] = True
@@ -505,14 +683,23 @@ def complete(args):
     try:
         state = store.load()
         record = find_record(state, args.ts)
-        client = SlackClient(token, config_value("SLACK_API_URL", home, "https://slack.com/api"), safe_int(config_value("SLACK_SUPPORT_TIMEOUT", home, "20"), 20, 5, 60))
-        text = args.text or "Fixed in fenedo-os."
-        result = client.call("chat.postMessage", payload={"channel": state["channel_id"], "thread_ts": record["thread_ts"], "text": text})
+        client = SlackClient(
+            token,
+            config_value("SLACK_API_URL", home, "https://slack.com/api"),
+            safe_int(config_value("SLACK_SUPPORT_TIMEOUT", home, "20"), 20, 5, 60),
+        )
+        text = args.text or REPLY_COMPLETE_DEFAULT
+        channel_id = str(record.get("channel_id") or state.get("channel_id") or "")
+        if not channel_id:
+            raise SupportError("support record has no channel_id; cannot reply")
+        source = str(record.get("source") or "channel")
+        result = post_user_reply(client, channel_id, str(record.get("thread_ts") or record["ts"]), text, source)
         record["status"] = "completed"
         record["reply_ts"] = str(result.get("ts", ""))
         record["completed_at"] = utc_now()
         store.save(state)
-        print("replied in Slack thread " + record["thread_ts"])
+        where = "DM" if source == "im" else "wątku Slack"
+        print("odpowiedziano w " + where + " " + str(record.get("thread_ts") or record["ts"]))
     finally:
         fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
         lock.close()
@@ -528,6 +715,13 @@ def status(args):
         counts[key] = counts.get(key, 0) + 1
     print("channel: #" + config_value("SLACK_SUPPORT_CHANNEL", home, DEFAULT_CHANNEL))
     print("token: configured" if config_value("SLACK_BOT_TOKEN", home) else "token: missing")
+    print("language: pl")
+    dm_cfg = config_value("SLACK_SUPPORT_DM", home, "on").strip().casefold()
+    print("dm_config: " + ("on" if dm_cfg not in ("0", "off", "false", "no") else "off"))
+    if "dm_enabled" in state:
+        print("dm_enabled: " + ("yes" if state.get("dm_enabled") else "no"))
+    if state.get("dm_error"):
+        print("dm_error: " + str(state.get("dm_error")))
     print("latest: " + str(state.get("latest_ts", "") or "(none)"))
     for key in sorted(counts):
         print(key + ": " + str(counts[key]))
