@@ -59,10 +59,25 @@ assert_contains "$out" "ok" "reporter matching accepts configured first names an
 pass "fm-slack-support: reporter allowlist handles display names such as Martyna Nowak"
 }
 
+SLACK_FIXTURE_PID=""
+
+stop_slack_fixture() {
+  [ -n "$SLACK_FIXTURE_PID" ] || return 0
+  kill "$SLACK_FIXTURE_PID" 2>/dev/null || true
+  wait "$SLACK_FIXTURE_PID" 2>/dev/null || true
+  SLACK_FIXTURE_PID=""
+}
+
+# fail() exits, so fixture teardown cannot ride on a RETURN trap.
+trap 'stop_slack_fixture; fm_test_cleanup' EXIT
+trap 'stop_slack_fixture; fm_test_cleanup; exit 130' INT
+trap 'stop_slack_fixture; fm_test_cleanup; exit 143' TERM
+
 start_slack_fixture() {
   local mode_file=$1 port_file=$2
   python3 - "$mode_file" "$port_file" <<'PY' &
 import json
+import os
 import pathlib
 import socketserver
 import sys
@@ -84,6 +99,9 @@ class Handler(BaseHTTPRequestHandler):
         if method == "conversations.list" and query.get("types") == ["im"]:
             if mode == "transient":
                 self.connection.close()
+                return
+            if mode == "http503":
+                self.send_error(503, "slack unavailable")
                 return
             if mode == "hard":
                 body = {"ok": False, "error": "missing_scope"}
@@ -110,7 +128,8 @@ server = socketserver.ThreadingTCPServer(("127.0.0.1", 0), Handler)
 server.daemon_threads = True
 port_file.write_text(str(server.server_address[1]), encoding="utf-8")
 threading.Thread(target=server.serve_forever, daemon=True).start()
-threading.Event().wait()
+# Self-bound so an escaped fixture cannot outlive its suite.
+threading.Event().wait(float(os.environ.get("FM_TEST_STUB_MAX_BLOCK_SECONDS", "120")))
 PY
   SLACK_FIXTURE_PID=$!
   for _ in $(seq 1 50); do
@@ -120,11 +139,20 @@ PY
   return 1
 }
 
+# Poll once, require a clean exit, and leave the output in POLL_OUT. The
+# assertion must not run inside a command substitution: fail() exits, and in a
+# subshell that exit would be swallowed and the suite would keep going.
+POLL_OUT=""
+slack_poll() {  # <label>
+  local rc=0
+  POLL_OUT=$(FM_HOME="$HOME_DIR" "$SUPPORT" poll 2>&1) || rc=$?
+  expect_code 0 "$rc" "$1"
+}
+
 test_dm_poll_classifies_transient_and_hard_failures() {
   local mode_file="$TMP_ROOT/slack-mode" port_file="$TMP_ROOT/slack-port"
   printf 'transient\n' > "$mode_file"
   start_slack_fixture "$mode_file" "$port_file" || fail "Slack fixture failed to start"
-  trap 'kill "$SLACK_FIXTURE_PID" 2>/dev/null || true' RETURN
   cat > "$HOME_DIR/.env" <<EOF
 SLACK_BOT_TOKEN=test-token
 SLACK_API_URL=http://127.0.0.1:$(cat "$port_file")
@@ -132,24 +160,59 @@ SLACK_SUPPORT_TIMEOUT=5
 EOF
 
   local out
-  out=$(FM_HOME="$HOME_DIR" "$SUPPORT" poll 2>&1)
+  slack_poll "a transient DM timeout must not fail the poll"
+  out="$POLL_OUT"
+  assert_contains "$out" "no new Slack support reports" "transient DM timeout still completes the poll quietly"
   assert_not_contains "$out" "dm-disabled" "transient DM timeout stays silent"
+  out=$(FM_HOME="$HOME_DIR" "$SUPPORT" status 2>&1)
+  assert_not_contains "$out" "dm_enabled: no" "a timeout must not persist a durable DM disable"
+  assert_not_contains "$out" "dm_error" "a timeout must not persist a durable DM error"
+
+  printf 'http503\n' > "$mode_file"
+  slack_poll "a retryable Slack 503 must not fail the poll"
+  out="$POLL_OUT"
+  assert_contains "$out" "no new Slack support reports" "a retryable Slack 503 still completes the poll quietly"
+  assert_not_contains "$out" "dm-disabled" "a retryable Slack 503 is not a DM disable"
+  out=$(FM_HOME="$HOME_DIR" "$SUPPORT" status 2>&1)
+  assert_not_contains "$out" "dm_enabled: no" "a retryable 503 must not persist a durable DM disable"
+  assert_not_contains "$out" "dm_error" "a retryable 503 must not persist a durable DM error"
 
   printf 'healthy\n' > "$mode_file"
-  out=$(FM_HOME="$HOME_DIR" "$SUPPORT" poll 2>&1)
+  slack_poll "a healthy poll succeeds after a timeout"
+  out="$POLL_OUT"
   assert_not_contains "$out" "dm-disabled" "the next healthy poll resumes normally"
   out=$(FM_HOME="$HOME_DIR" "$SUPPORT" status 2>&1)
   assert_contains "$out" "dm_enabled: yes" "healthy poll recalculates DM capability after timeout"
 
+  printf 'transient\n' > "$mode_file"
+  slack_poll "a timeout after a healthy poll must not fail the poll"
+  out="$POLL_OUT"
+  assert_not_contains "$out" "dm-disabled" "a timeout after a healthy poll stays silent"
+  out=$(FM_HOME="$HOME_DIR" "$SUPPORT" status 2>&1)
+  assert_contains "$out" "dm_enabled: yes" "a timeout leaves the last known DM capability intact"
+
   printf 'hard\n' > "$mode_file"
-  out=$(FM_HOME="$HOME_DIR" "$SUPPORT" poll 2>&1)
+  slack_poll "a scope refusal reports through poll output, not a crash"
+  out="$POLL_OUT"
   assert_contains "$out" "dm-disabled" "Slack permission refusal still emits hard-disable"
+  out=$(FM_HOME="$HOME_DIR" "$SUPPORT" status 2>&1)
+  assert_contains "$out" "dm_enabled: no" "a scope refusal persists the durable DM disable"
+  assert_contains "$out" "dm_error" "a scope refusal persists the durable DM error"
+
+  printf 'transient\n' > "$mode_file"
+  slack_poll "a timeout after a scope refusal must not fail the poll"
+  out="$POLL_OUT"
+  assert_not_contains "$out" "dm-disabled" "a timeout does not re-emit the standing scope alarm"
+  out=$(FM_HOME="$HOME_DIR" "$SUPPORT" status 2>&1)
+  assert_contains "$out" "dm_enabled: no" "a timeout does not clear a real DM permission alarm"
 
   printf 'healthy\n' > "$mode_file"
-  out=$(FM_HOME="$HOME_DIR" "$SUPPORT" poll 2>&1)
+  slack_poll "a healthy poll succeeds after a scope refusal"
+  out="$POLL_OUT"
   assert_not_contains "$out" "dm-disabled" "healthy poll does not retain hard-disable output"
   out=$(FM_HOME="$HOME_DIR" "$SUPPORT" status 2>&1)
   assert_contains "$out" "dm_enabled: yes" "healthy poll recalculates DM capability"
+  stop_slack_fixture
   pass "fm-slack-support: transient DM failures are distinct from authorization failures"
 }
 

@@ -199,7 +199,10 @@ class SlackClient:
             with urllib.request.urlopen(request, timeout=self.timeout) as response:
                 raw = response.read()
         except urllib.error.HTTPError as exc:
-            raise SupportError("Slack API HTTP error " + str(exc.code)) from None
+            message = "Slack API HTTP error " + str(exc.code)
+            if exc.code == 429 or exc.code >= 500:
+                raise TransientSupportError(message) from None
+            raise SupportError(message) from None
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
             detail = getattr(exc, "reason", None) or exc.__class__.__name__
             raise TransientSupportError("Slack API connection failed: " + str(detail)) from None
@@ -514,11 +517,15 @@ def scan_open_thread_followups(
 
 
 def list_im_channels(client: SlackClient):
-    """Return DM conversations the bot is in. Raises SupportError on missing_scope."""
+    """Return DM conversations the bot is in, or None when Slack is unreachable.
+
+    Raises SupportError on missing_scope; a transient failure leaves the DM
+    capability unknown rather than lost.
+    """
     try:
         return client.paged("conversations.list", "channels", {"types": "im", "exclude_archived": "true"})
     except TransientSupportError:
-        raise
+        return None
     except SupportError as exc:
         if "missing_scope" in str(exc) or "not_allowed_token_type" in str(exc):
             raise SupportError(
@@ -829,54 +836,53 @@ def poll(args):
                 output=output,
             )
         # Private DMs (optional; requires im:* scopes).
-        state["dm_enabled"] = False
-        state.pop("dm_error", None)
-        if want_dm:
+        if not want_dm:
+            state["dm_enabled"] = False
+            state.pop("dm_error", None)
+        else:
             try:
                 ims = list_im_channels(client)
-                state["dm_enabled"] = True
-                state.pop("dm_error", None)
-                skipped = 0
-                for im in ims:
-                    im_id = str(im.get("id", ""))
-                    if not im_id:
-                        continue
-                    try:
-                        im_messages = fetch_messages(
-                            client,
-                            im_id,
-                            str((state.get("im_cursors") or {}).get(im_id, "")),
-                            max_messages,
-                        )
-                    except SupportError as exc:
-                        # Closed/stale DMs often return channel_not_found; skip one, keep others.
-                        err = str(exc)
-                        if "channel_not_found" in err or "invalid_channel" in err:
-                            skipped += 1
+                # None means Slack was unreachable: keep the last known capability.
+                if ims is not None:
+                    state["dm_enabled"] = True
+                    state.pop("dm_error", None)
+                    skipped = 0
+                    for im in ims:
+                        im_id = str(im.get("id", ""))
+                        if not im_id:
                             continue
-                        raise
-                    ingest_messages(
-                        home=home,
-                        root=root,
-                        client=client,
-                        state=state,
-                        users=users,
-                        messages=im_messages,
-                        channel_id=im_id,
-                        channel_label="dm:" + im_id,
-                        source="im",
-                        cursor_key="latest_ts",
-                        output=output,
-                    )
-                if skipped:
-                    # Local diagnostic only; do not wake firstmate every poll.
-                    pass
-            except TransientSupportError as exc:
-                state["dm_enabled"] = False
-                state["dm_error"] = str(exc)
-                # A cursor poll loses no messages when one DM capability fetch times out.
-                pass
+                        try:
+                            im_messages = fetch_messages(
+                                client,
+                                im_id,
+                                str((state.get("im_cursors") or {}).get(im_id, "")),
+                                max_messages,
+                            )
+                        except SupportError as exc:
+                            # Closed/stale DMs often return channel_not_found; skip one, keep others.
+                            err = str(exc)
+                            if "channel_not_found" in err or "invalid_channel" in err:
+                                skipped += 1
+                                continue
+                            raise
+                        ingest_messages(
+                            home=home,
+                            root=root,
+                            client=client,
+                            state=state,
+                            users=users,
+                            messages=im_messages,
+                            channel_id=im_id,
+                            channel_label="dm:" + im_id,
+                            source="im",
+                            cursor_key="latest_ts",
+                            output=output,
+                        )
+                    if skipped:
+                        # Local diagnostic only; do not wake firstmate every poll.
+                        pass
             except SupportError as exc:
+                # Includes a fetch that keeps failing: operators still see it.
                 state["dm_enabled"] = False
                 state["dm_error"] = str(exc)
                 output.append("dm-disabled: " + str(exc))
