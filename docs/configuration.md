@@ -668,6 +668,12 @@ The poller uses Slack's Web API over standard-library HTTPS and no paid API.
 User-facing bot replies are Polish by default (ack on intake and completion text).
 The `complete` command posts the completion reply in the original channel thread or DM after the queued fix lands. Ack, completion, and thread-followup replies tag interested humans: the ticket creator and any person who @mentioned Fenek in that thread. Open-ticket thread replies that @mention Fenek are scanned on each poll (channel history alone misses them) and wake firstmate as `thread-followup`.
 With DM enabled, the poller also reads direct messages to the bot (private topics that should not hit `#support`).
+Beyond `SLACK_SUPPORT_DM=off`, DM intake is disabled durably only by a non-retryable failure of the DM capability probe, or by a permission refusal while reading a DM: `poll` prints `dm-disabled: ...` and `status` then reports `dm_enabled: no` with `dm_error`.
+The usual cause is a missing `im:*` scope from step 1.
+A retryable failure is never reported that way, because it clears itself on the next poll.
+Timeouts, dropped or truncated responses, HTTP 429 and 5xx, and Slack's `ratelimited`, `internal_error`, `service_unavailable`, and `fatal_error` replies all keep the last known DM capability and record nothing durable.
+Deferred DM reads are reported once per poll as `dm-retry: <count> DM fetch(es) deferred to the next poll: <reason>`.
+A single DM that Slack rejects for another reason is reported as `dm-fetch-failed <channel>: <reason>` while the remaining DMs are still polled, except that a closed or stale DM answering `channel_not_found` is skipped silently.
 It never creates a Slack app, invites a bot, or prints the bot token.
 The poller is off until the effective home's gitignored `.env` contains `SLACK_BOT_TOKEN`.
 Environment values override `.env` for direct invocations.
