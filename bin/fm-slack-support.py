@@ -9,6 +9,7 @@ DMs need Slack scopes im:history + im:read (and chat:write, already required).
 import argparse
 import fcntl
 import hashlib
+import http.client
 import json
 import os
 import re
@@ -216,7 +217,7 @@ class SlackClient:
             if exc.code == 429 or exc.code >= 500:
                 raise TransientSupportError(message) from None
             raise SupportError(message) from None
-        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        except (urllib.error.URLError, http.client.HTTPException, TimeoutError, OSError) as exc:
             detail = getattr(exc, "reason", None) or exc.__class__.__name__
             raise TransientSupportError("Slack API connection failed: " + str(detail)) from None
         try:

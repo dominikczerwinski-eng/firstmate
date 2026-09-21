@@ -123,6 +123,14 @@ class Handler(BaseHTTPRequestHandler):
             if query.get("channel") == ["D-im1"] and mode == "dm_fetch_429":
                 self.send_error(429, "slow down")
                 return
+            if query.get("channel") == ["D-im1"] and mode == "dm_fetch_truncated":
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", "4096")
+                self.end_headers()
+                self.wfile.write(b'{"ok": true, "messages": []')
+                self.close_connection = True
+                return
             failures = {
                 "dm_fetch_ratelimited": "ratelimited",
                 "dm_fetch_hard": "invalid_arguments",
@@ -258,6 +266,15 @@ EOF
   assert_contains "$out" "dm-retry:" "an ok:false ratelimited body defers with an operator line"
   out=$(FM_HOME="$HOME_DIR" "$SUPPORT" status 2>&1)
   assert_contains "$out" "dm_enabled: yes" "an ok:false ratelimited body keeps the DM capability"
+
+  printf 'dm_fetch_truncated\n' > "$mode_file"
+  slack_poll "a truncated DM history response must not fail the poll"
+  out="$POLL_OUT"
+  assert_not_contains "$out" "dm-disabled" "a truncated response is not a permission loss"
+  assert_contains "$out" "dm-retry:" "a truncated response defers with an operator line"
+  assert_grep "conversations.history D-im2" "$REQ_LOG" "a truncated response does not abandon the remaining DMs"
+  out=$(FM_HOME="$HOME_DIR" "$SUPPORT" status 2>&1)
+  assert_contains "$out" "dm_enabled: yes" "a truncated response keeps the DM capability"
 
   printf 'dm_fetch_hard\n' > "$mode_file"
   slack_poll "a rejected DM history fetch reports through poll output, not a crash"
