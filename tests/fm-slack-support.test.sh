@@ -6,6 +6,7 @@ set -u
 
 TMP_ROOT=$(fm_test_tmproot fm-slack-support)
 HOME_DIR="$TMP_ROOT/home"
+REQ_LOG="$TMP_ROOT/slack-requests"
 mkdir -p "$HOME_DIR"
 SUPPORT="$ROOT/bin/fm-slack-support.sh"
 
@@ -73,8 +74,8 @@ stop_slack_fixture() {
 trap 'stop_slack_fixture; fm_test_cleanup' EXIT
 
 start_slack_fixture() {
-  local mode_file=$1 port_file=$2
-  python3 - "$mode_file" "$port_file" <<'PY' &
+  local mode_file=$1 port_file=$2 request_log=$3
+  python3 - "$mode_file" "$port_file" "$request_log" <<'PY' &
 import json
 import os
 import pathlib
@@ -86,6 +87,7 @@ from http.server import BaseHTTPRequestHandler
 
 mode_file = pathlib.Path(sys.argv[1])
 port_file = pathlib.Path(sys.argv[2])
+request_log = pathlib.Path(sys.argv[3])
 
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *_args):
@@ -95,6 +97,9 @@ class Handler(BaseHTTPRequestHandler):
         query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
         method = urllib.parse.urlsplit(self.path).path.rsplit("/", 1)[-1]
         mode = mode_file.read_text(encoding="utf-8").strip()
+        # Serialized request trace: the contract this suite asserts against.
+        with request_log.open("a", encoding="utf-8") as handle:
+            handle.write(method + " " + (query.get("channel") or [""])[0] + "\n")
         if method == "conversations.list" and query.get("types") == ["im"]:
             if mode == "transient":
                 self.connection.close()
@@ -104,8 +109,10 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if mode == "hard":
                 body = {"ok": False, "error": "missing_scope"}
+            elif mode == "probe_ratelimited":
+                body = {"ok": False, "error": "ratelimited"}
             elif mode.startswith("dm_fetch_"):
-                body = {"ok": True, "channels": [{"id": "D-im1"}]}
+                body = {"ok": True, "channels": [{"id": "D-im1"}, {"id": "D-im2"}]}
             else:
                 body = {"ok": True, "channels": []}
         elif method == "conversations.list":
@@ -116,8 +123,13 @@ class Handler(BaseHTTPRequestHandler):
             if query.get("channel") == ["D-im1"] and mode == "dm_fetch_429":
                 self.send_error(429, "slow down")
                 return
-            if query.get("channel") == ["D-im1"] and mode == "dm_fetch_hard":
-                body = {"ok": False, "error": "invalid_arguments"}
+            failures = {
+                "dm_fetch_ratelimited": "ratelimited",
+                "dm_fetch_hard": "invalid_arguments",
+                "dm_fetch_scope": "missing_scope",
+            }
+            if query.get("channel") == ["D-im1"] and mode in failures:
+                body = {"ok": False, "error": failures[mode]}
             else:
                 body = {"ok": True, "messages": []}
         elif method == "auth.test":
@@ -152,6 +164,7 @@ PY
 POLL_OUT=""
 slack_poll() {  # <label>
   local rc=0
+  : > "$REQ_LOG"
   POLL_OUT=$(FM_HOME="$HOME_DIR" "$SUPPORT" poll 2>&1) || rc=$?
   expect_code 0 "$rc" "$1"
 }
@@ -159,7 +172,7 @@ slack_poll() {  # <label>
 test_dm_poll_classifies_transient_and_hard_failures() {
   local mode_file="$TMP_ROOT/slack-mode" port_file="$TMP_ROOT/slack-port"
   printf 'transient\n' > "$mode_file"
-  start_slack_fixture "$mode_file" "$port_file" || fail "Slack fixture failed to start"
+  start_slack_fixture "$mode_file" "$port_file" "$REQ_LOG" || fail "Slack fixture failed to start"
   cat > "$HOME_DIR/.env" <<EOF
 SLACK_BOT_TOKEN=test-token
 SLACK_API_URL=http://127.0.0.1:$(cat "$port_file")
@@ -220,20 +233,47 @@ EOF
   out=$(FM_HOME="$HOME_DIR" "$SUPPORT" status 2>&1)
   assert_contains "$out" "dm_enabled: yes" "healthy poll recalculates DM capability"
 
+  printf 'probe_ratelimited\n' > "$mode_file"
+  slack_poll "a rate-limited DM capability probe must not fail the poll"
+  out="$POLL_OUT"
+  assert_not_contains "$out" "dm-disabled" "a rate-limited probe is not a permission loss"
+  out=$(FM_HOME="$HOME_DIR" "$SUPPORT" status 2>&1)
+  assert_contains "$out" "dm_enabled: yes" "a rate-limited probe keeps the last known DM capability"
+  assert_not_contains "$out" "dm_error" "a rate-limited probe persists no DM error"
+
   printf 'dm_fetch_429\n' > "$mode_file"
   slack_poll "a rate-limited DM history fetch must not fail the poll"
   out="$POLL_OUT"
   assert_not_contains "$out" "dm-disabled" "a rate-limited DM history fetch is not a permission loss"
+  assert_contains "$out" "dm-retry:" "a deferred DM fetch still reaches the operator"
+  assert_grep "conversations.history D-im2" "$REQ_LOG" "a deferred DM does not abandon the remaining DMs"
   out=$(FM_HOME="$HOME_DIR" "$SUPPORT" status 2>&1)
   assert_contains "$out" "dm_enabled: yes" "a rate-limited DM history fetch keeps the DM capability"
   assert_not_contains "$out" "dm_error" "a rate-limited DM history fetch persists no DM error"
 
+  printf 'dm_fetch_ratelimited\n' > "$mode_file"
+  slack_poll "a ratelimited DM history body must not fail the poll"
+  out="$POLL_OUT"
+  assert_not_contains "$out" "dm-disabled" "an ok:false ratelimited body is not a permission loss"
+  assert_contains "$out" "dm-retry:" "an ok:false ratelimited body defers with an operator line"
+  out=$(FM_HOME="$HOME_DIR" "$SUPPORT" status 2>&1)
+  assert_contains "$out" "dm_enabled: yes" "an ok:false ratelimited body keeps the DM capability"
+
   printf 'dm_fetch_hard\n' > "$mode_file"
   slack_poll "a rejected DM history fetch reports through poll output, not a crash"
   out="$POLL_OUT"
-  assert_contains "$out" "dm-disabled" "a non-retryable DM history failure still signals operators"
+  assert_contains "$out" "dm-fetch-failed D-im1" "an unreadable DM is reported per conversation"
+  assert_not_contains "$out" "dm-disabled" "one unreadable DM is not a lost DM capability"
+  assert_grep "conversations.history D-im2" "$REQ_LOG" "an unreadable DM does not abandon the remaining DMs"
   out=$(FM_HOME="$HOME_DIR" "$SUPPORT" status 2>&1)
-  assert_contains "$out" "dm_enabled: no" "a non-retryable DM history failure persists the DM disable"
+  assert_contains "$out" "dm_enabled: yes" "one unreadable DM leaves the probed DM capability intact"
+
+  printf 'dm_fetch_scope\n' > "$mode_file"
+  slack_poll "a DM history scope refusal reports through poll output, not a crash"
+  out="$POLL_OUT"
+  assert_contains "$out" "dm-disabled" "a DM history scope refusal still alarms"
+  out=$(FM_HOME="$HOME_DIR" "$SUPPORT" status 2>&1)
+  assert_contains "$out" "dm_enabled: no" "a DM history scope refusal persists the DM disable"
   stop_slack_fixture
   pass "fm-slack-support: transient DM failures are distinct from authorization failures"
 }

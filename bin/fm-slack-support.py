@@ -104,6 +104,19 @@ class TransientSupportError(SupportError):
     """A connectivity failure that should not be treated as lost capability."""
 
 
+# Slack reports these server-side conditions with HTTP 200 and ok:false; they
+# clear themselves on the next poll.
+TRANSIENT_SLACK_ERRORS = frozenset(
+    {"ratelimited", "internal_error", "service_unavailable", "fatal_error"}
+)
+
+
+def is_permission_error(exc) -> bool:
+    """True when Slack refused the call for a missing scope or token type."""
+    err = str(exc)
+    return "missing_scope" in err or "not_allowed_token_type" in err
+
+
 def env_file_value(path: Path, key: str) -> str:
     if not path.is_file():
         return ""
@@ -212,7 +225,10 @@ class SlackClient:
             raise SupportError("Slack API returned invalid JSON") from None
         if not isinstance(result, dict) or not result.get("ok"):
             error = result.get("error", "unknown error") if isinstance(result, dict) else "invalid response"
-            raise SupportError("Slack API rejected the request: " + str(error))
+            message = "Slack API rejected the request: " + str(error)
+            if str(error) in TRANSIENT_SLACK_ERRORS:
+                raise TransientSupportError(message)
+            raise SupportError(message)
         return result
 
     def paged(self, method: str, key: str, params=None):
@@ -527,7 +543,7 @@ def list_im_channels(client: SlackClient):
     except TransientSupportError:
         return None
     except SupportError as exc:
-        if "missing_scope" in str(exc) or "not_allowed_token_type" in str(exc):
+        if is_permission_error(exc):
             raise SupportError(
                 "DM support needs Slack scopes im:history and im:read "
                 "(reinstall the Fenek app after adding them); channel poll still works"
@@ -846,7 +862,8 @@ def poll(args):
                 if ims is not None:
                     state["dm_enabled"] = True
                     state.pop("dm_error", None)
-                    skipped = 0
+                    deferred = 0
+                    deferred_reason = ""
                     for im in ims:
                         im_id = str(im.get("id", ""))
                         if not im_id:
@@ -858,16 +875,20 @@ def poll(args):
                                 str((state.get("im_cursors") or {}).get(im_id, "")),
                                 max_messages,
                             )
-                        except TransientSupportError:
-                            skipped += 1
+                        except TransientSupportError as exc:
+                            deferred += 1
+                            deferred_reason = str(exc)
                             continue
                         except SupportError as exc:
                             # Closed/stale DMs often return channel_not_found; skip one, keep others.
                             err = str(exc)
                             if "channel_not_found" in err or "invalid_channel" in err:
-                                skipped += 1
                                 continue
-                            raise
+                            if is_permission_error(exc):
+                                raise
+                            # One unreadable DM is not a lost DM capability.
+                            output.append("dm-fetch-failed " + im_id + ": " + err)
+                            continue
                         ingest_messages(
                             home=home,
                             root=root,
@@ -881,9 +902,14 @@ def poll(args):
                             cursor_key="latest_ts",
                             output=output,
                         )
-                    if skipped:
-                        # Local diagnostic only; do not wake firstmate every poll.
-                        pass
+                    if deferred:
+                        # Printed only; a retryable blip must not wake firstmate.
+                        output.append(
+                            "dm-retry: "
+                            + str(deferred)
+                            + " DM fetch(es) deferred to the next poll: "
+                            + deferred_reason
+                        )
             except SupportError as exc:
                 state["dm_enabled"] = False
                 state["dm_error"] = str(exc)
