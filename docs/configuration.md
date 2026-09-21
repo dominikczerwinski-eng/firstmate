@@ -7,7 +7,7 @@ The optional `bin/fm-hotel-bot.sh` workflow handles Polish hotel requests from S
 Set `FM_HOTEL_CHANNEL_ID` to the channel ID and run `bin/fm-hotel-bot.sh poll` from a scheduler to persist privacy-safe intents under `state/hotel/`.
 
 ### Hotel invoice inbox
-`bin/fm-hotel-invoice.py` watches the same `#hotele` channel for PDF/JPEG attachments and saves them into the captain's iCloud purchase-invoice tree:
+`bin/fm-hotel-invoice.py` watches the same `#hotele` channel for PDF, JPEG, PNG, and HEIC attachments and saves them into the captain's iCloud purchase-invoice tree:
 `~/Library/Mobile Documents/com~apple~CloudDocs/Fenedo sp. z o.o./Finanse/Wyniki/YYYY faktury zakupowe + wyciągi YYYY/MM:YYYY/`.
 The month folder is chosen from the invoice issue date when `pdftotext` can read it, otherwise today's date. Override the root with `HOTEL_INVOICE_ROOT`. Requires Slack bot scopes `files:read` (and `files:read.remote` when Slack hosts files remotely). Guest details belong only in the local gitignored `config/hotel-guest.env` file and must not be copied into Slack or Pipedrive lookup output.
 
@@ -673,7 +673,7 @@ The usual cause is a missing `im:*` scope from step 1.
 A retryable failure is never reported that way, because it clears itself on the next poll.
 Timeouts, dropped or truncated responses, HTTP 429 and 5xx, and Slack's `ratelimited`, `internal_error`, `service_unavailable`, and `fatal_error` replies all keep the last known DM capability and record nothing durable.
 Deferred DM reads are reported once per poll as `dm-retry: <count> DM fetch(es) deferred to the next poll: <reason>`.
-A single DM that Slack rejects for another reason is reported as `dm-fetch-failed <channel>: <reason>` while the remaining DMs are still polled, except that a closed or stale DM answering `channel_not_found` is skipped silently.
+A single DM that Slack rejects for another reason is reported as `dm-fetch-failed <channel>: <reason>` while the remaining DMs are still polled, except that a closed or stale DM answering `channel_not_found` or `invalid_channel` is skipped silently.
 It never creates a Slack app, invites a bot, or prints the bot token.
 The poller is off until the effective home's gitignored `.env` contains `SLACK_BOT_TOKEN`.
 Environment values override `.env` for direct invocations.
