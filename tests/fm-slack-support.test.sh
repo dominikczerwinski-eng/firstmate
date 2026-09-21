@@ -2,6 +2,7 @@
 # Behavior tests for bin/fm-slack-support.sh.
 set -u
 
+# shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 TMP_ROOT=$(fm_test_tmproot fm-slack-support)

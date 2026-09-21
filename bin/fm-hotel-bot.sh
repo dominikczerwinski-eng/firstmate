@@ -4,7 +4,7 @@
 # Booking results are supplied by a human or separate read-only adapter.
 set -euo pipefail
 
-ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
+ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd -P)
 STATE_DIR=${FM_HOTEL_STATE_DIR:-${FM_HOME:-$ROOT}/state/hotel}
 mkdir -p "$STATE_DIR"
 die() { printf 'fm-hotel-bot: %s\n' "$*" >&2; exit 2; }
