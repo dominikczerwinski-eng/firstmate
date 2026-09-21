@@ -858,6 +858,9 @@ def poll(args):
                                 str((state.get("im_cursors") or {}).get(im_id, "")),
                                 max_messages,
                             )
+                        except TransientSupportError:
+                            skipped += 1
+                            continue
                         except SupportError as exc:
                             # Closed/stale DMs often return channel_not_found; skip one, keep others.
                             err = str(exc)
@@ -882,7 +885,6 @@ def poll(args):
                         # Local diagnostic only; do not wake firstmate every poll.
                         pass
             except SupportError as exc:
-                # Includes a fetch that keeps failing: operators still see it.
                 state["dm_enabled"] = False
                 state["dm_error"] = str(exc)
                 output.append("dm-disabled: " + str(exc))

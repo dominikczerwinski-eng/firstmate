@@ -68,10 +68,9 @@ stop_slack_fixture() {
   SLACK_FIXTURE_PID=""
 }
 
-# fail() exits, so fixture teardown cannot ride on a RETURN trap.
+# fail() exits, so fixture teardown cannot ride on a RETURN trap. lib.sh's
+# signal traps exit, which runs this EXIT trap in turn.
 trap 'stop_slack_fixture; fm_test_cleanup' EXIT
-trap 'stop_slack_fixture; fm_test_cleanup; exit 130' INT
-trap 'stop_slack_fixture; fm_test_cleanup; exit 143' TERM
 
 start_slack_fixture() {
   local mode_file=$1 port_file=$2
@@ -105,6 +104,8 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if mode == "hard":
                 body = {"ok": False, "error": "missing_scope"}
+            elif mode.startswith("dm_fetch_"):
+                body = {"ok": True, "channels": [{"id": "D-im1"}]}
             else:
                 body = {"ok": True, "channels": []}
         elif method == "conversations.list":
@@ -112,7 +113,13 @@ class Handler(BaseHTTPRequestHandler):
         elif method == "users.list":
             body = {"ok": True, "members": []}
         elif method == "conversations.history":
-            body = {"ok": True, "messages": []}
+            if query.get("channel") == ["D-im1"] and mode == "dm_fetch_429":
+                self.send_error(429, "slow down")
+                return
+            if query.get("channel") == ["D-im1"] and mode == "dm_fetch_hard":
+                body = {"ok": False, "error": "invalid_arguments"}
+            else:
+                body = {"ok": True, "messages": []}
         elif method == "auth.test":
             body = {"ok": True, "user_id": "U-bot"}
         else:
@@ -212,6 +219,21 @@ EOF
   assert_not_contains "$out" "dm-disabled" "healthy poll does not retain hard-disable output"
   out=$(FM_HOME="$HOME_DIR" "$SUPPORT" status 2>&1)
   assert_contains "$out" "dm_enabled: yes" "healthy poll recalculates DM capability"
+
+  printf 'dm_fetch_429\n' > "$mode_file"
+  slack_poll "a rate-limited DM history fetch must not fail the poll"
+  out="$POLL_OUT"
+  assert_not_contains "$out" "dm-disabled" "a rate-limited DM history fetch is not a permission loss"
+  out=$(FM_HOME="$HOME_DIR" "$SUPPORT" status 2>&1)
+  assert_contains "$out" "dm_enabled: yes" "a rate-limited DM history fetch keeps the DM capability"
+  assert_not_contains "$out" "dm_error" "a rate-limited DM history fetch persists no DM error"
+
+  printf 'dm_fetch_hard\n' > "$mode_file"
+  slack_poll "a rejected DM history fetch reports through poll output, not a crash"
+  out="$POLL_OUT"
+  assert_contains "$out" "dm-disabled" "a non-retryable DM history failure still signals operators"
+  out=$(FM_HOME="$HOME_DIR" "$SUPPORT" status 2>&1)
+  assert_contains "$out" "dm_enabled: no" "a non-retryable DM history failure persists the DM disable"
   stop_slack_fixture
   pass "fm-slack-support: transient DM failures are distinct from authorization failures"
 }
