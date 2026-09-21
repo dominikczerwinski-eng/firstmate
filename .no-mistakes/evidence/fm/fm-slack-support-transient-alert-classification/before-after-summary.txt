@@ -1,0 +1,28 @@
+Same operator session driven against both implementations (bin/fm-slack-support.sh poll / status)
+against a local stand-in Slack endpoint. Left = pre-fix (ef32bcc), right = branch under test (8bb8310).
+
+BEFORE (ef32bcc)                                           | AFTER (8bb8310)
+-----------------------------------------------------------+-------------------------------------------
+S1 dropped connection during DM probe:                     | S1 dropped connection during DM probe:
+  poll: dm-disabled: Slack API connection failed:          |   poll: (quiet) no new Slack support reports
+        RemoteDisconnected                                 | 
+  status: dm_enabled: no / dm_error: ...connection         |   status: dm_enabled: yes / no dm_error
+                                                           | 
+S2 real missing_scope:                                     | S2 real missing_scope:
+  poll: dm-disabled: DM support needs im:history...        |   poll: dm-disabled: DM support needs im:history...
+  status: dm_enabled: no + dm_error                        |   status: dm_enabled: no + dm_error  (unchanged)
+                                                           | 
+S3a HTTP 429 on one DM history:                            | S3a HTTP 429 on one DM history:
+  poll: dm-disabled: Slack API HTTP error 429              |   poll: dm-retry: 1 DM fetch(es) deferred...
+  remaining DM D-kasia never polled                        |   remaining DM D-kasia still polled
+  status: dm_enabled: no                                   |   status: dm_enabled: yes
+                                                           | 
+S4 truncated DM body mid-poll:                             | S4 truncated DM body mid-poll:
+  poll: Python traceback, exit 1                           |   poll: dm-retry: ... IncompleteRead, exit 0
+  channel state never saved ->                             |   channel state saved ->
+  next poll re-posts a DUPLICATE Polish ack (1)            |   next poll posts nothing (0)
+                                                           | 
+S5 one DM returns invalid_arguments:                       | S5 one DM returns invalid_arguments:
+  poll: dm-disabled (whole DM capability lost)             |   poll: dm-fetch-failed D-martyna: ... (scoped)
+  remaining DM D-kasia never polled                        |   remaining DM D-kasia still polled
+  status: dm_enabled: no                                   |   status: dm_enabled: yes

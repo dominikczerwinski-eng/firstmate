@@ -1,0 +1,154 @@
+implementation under test: target
+
+
+================ warm-up: one healthy poll so DM capability is known good ================
+
+--- $ fm-slack-support.sh poll   [slack: healthy]
+no new Slack support reports
+[exit 0]
+
+--- $ fm-slack-support.sh status   [slack: healthy]
+channel: #support
+token: configured
+language: pl
+dm_config: on
+dm_enabled: yes
+latest: (none)
+[exit 0]
+
+================ S1  transient network timeout during the DM capability probe ================
+
+--- $ fm-slack-support.sh poll   [slack: probe_timeout]
+no new Slack support reports
+[exit 0]
+
+--- $ fm-slack-support.sh status   [slack: probe_timeout]
+channel: #support
+token: configured
+language: pl
+dm_config: on
+dm_enabled: yes
+latest: (none)
+[exit 0]
+
+================ S2  genuine loss of the im:* scopes ================
+
+--- $ fm-slack-support.sh poll   [slack: probe_missing_scope]
+dm-disabled: DM support needs Slack scopes im:history and im:read (reinstall the Fenek app after adding them); channel poll still works
+[exit 0]
+
+--- $ fm-slack-support.sh status   [slack: probe_missing_scope]
+channel: #support
+token: configured
+language: pl
+dm_config: on
+dm_enabled: no
+dm_error: DM support needs Slack scopes im:history and im:read (reinstall the Fenek app after adding them); channel poll still works
+latest: (none)
+[exit 0]
+
+================ S3a  a reporter DMs a bug while that DM is rate-limited (HTTP 429) ================
+
+--- $ fm-slack-support.sh poll   [slack: healthy]
+no new Slack support reports
+[exit 0]
+
+--- $ fm-slack-support.sh poll   [slack: dm_429]
+dm-retry: 1 DM fetch(es) deferred to the next poll: Slack API HTTP error 429
+[exit 0]
+
+--- $ fm-slack-support.sh status   [slack: dm_429]
+channel: #support
+token: configured
+language: pl
+dm_config: on
+dm_enabled: yes
+latest: (none)
+[exit 0]
+
+[requests this poll]
+conversations.history D-martyna
+conversations.history D-kasia
+conversations.history C-support
+conversations.history D-martyna
+conversations.history D-kasia
+[replies posted to the reporter]
+
+================ S3b  next poll after the rate limit clears: the deferred report is delivered ================
+
+--- $ fm-slack-support.sh poll   [slack: healthy]
+operational 1700000100.0001 (im) queued as slack-support-e39645e1ee8f7314 for fenedo-os
+[exit 0]
+
+--- $ fm-slack-support.sh status   [slack: healthy]
+channel: #support
+token: configured
+language: pl
+dm_config: on
+dm_enabled: yes
+latest: (none)
+queued-for-fenedo-os: 1
+[exit 0]
+
+[replies posted to the reporter]
+{"channel": "D-martyna", "thread_ts": null, "text": "<@U-martyna> Przyjąłem. Oddaję do kolejki naprawy Fenedo OS (diagnoza/fix). Odpiszę w tym wątku, gdy będzie aktualizacja."}
+[queued fenedo-os backlog item]
+
+================ S4  truncated DM response in a poll that already ingested a channel report ================
+
+--- $ fm-slack-support.sh poll   [slack: dm_truncated]
+operational 1700000200.0001 (channel) queued as slack-support-e90769d941a47f30 for fenedo-os
+dm-retry: 1 DM fetch(es) deferred to the next poll: Slack API connection failed: IncompleteRead
+[exit 0]
+
+--- $ fm-slack-support.sh status   [slack: dm_truncated]
+channel: #support
+token: configured
+language: pl
+dm_config: on
+dm_enabled: yes
+latest: 1700000200.0001
+queued-for-fenedo-os: 2
+[exit 0]
+
+[replies posted during the truncated poll]
+{"channel": "C-support", "thread_ts": "1700000200.0001", "text": "<@U-martyna> Przyjąłem. Oddaję do kolejki naprawy Fenedo OS (diagnoza/fix). Odpiszę w tym wątku, gdy będzie aktualizacja."}
+
+--- $ fm-slack-support.sh poll   [slack: healthy]
+no new Slack support reports
+[exit 0]
+[replies posted on the following poll - must not re-ack the same channel report]
+(post count: 0)
+
+================ S5  one DM is permanently unreadable (invalid_arguments) ================
+
+--- $ fm-slack-support.sh poll   [slack: dm_invalid_args]
+dm-fetch-failed D-martyna: Slack API rejected the request: invalid_arguments
+[exit 0]
+
+--- $ fm-slack-support.sh status   [slack: dm_invalid_args]
+channel: #support
+token: configured
+language: pl
+dm_config: on
+dm_enabled: yes
+latest: 1700000200.0001
+queued-for-fenedo-os: 2
+[exit 0]
+
+[conversations.history calls this poll]
+conversations.history C-support
+conversations.history D-martyna
+conversations.history D-kasia
+
+================ final persisted state ================
+{
+  "dm_enabled": true,
+  "dm_error": null,
+  "latest_ts": "1700000200.0001",
+  "im_cursors": {
+    "D-martyna": "1700000100.0001"
+  },
+  "channel_name": "support"
+}
+/Users/dominik/.no-mistakes/evidence/01M31SPJ6FVJM0ZFZNGQG40H4S/harness/drive.sh: line 17:  3914 Terminated: 15          FAKE_SLACK_MAX_SECONDS=300 python3 "$EV/harness/fake_slack.py" "$MODE" "$PORT" "$REQ" "$POST" "$FX"
