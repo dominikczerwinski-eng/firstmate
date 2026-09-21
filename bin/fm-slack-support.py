@@ -100,6 +100,10 @@ class SupportError(Exception):
     """A safe-to-display integration error that contains no credentials."""
 
 
+class TransientSupportError(SupportError):
+    """A connectivity failure that should not be treated as lost capability."""
+
+
 def env_file_value(path: Path, key: str) -> str:
     if not path.is_file():
         return ""
@@ -198,7 +202,7 @@ class SlackClient:
             raise SupportError("Slack API HTTP error " + str(exc.code)) from None
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
             detail = getattr(exc, "reason", None) or exc.__class__.__name__
-            raise SupportError("Slack API connection failed: " + str(detail)) from None
+            raise TransientSupportError("Slack API connection failed: " + str(detail)) from None
         try:
             result = json.loads(raw.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError):
@@ -513,6 +517,8 @@ def list_im_channels(client: SlackClient):
     """Return DM conversations the bot is in. Raises SupportError on missing_scope."""
     try:
         return client.paged("conversations.list", "channels", {"types": "im", "exclude_archived": "true"})
+    except TransientSupportError:
+        raise
     except SupportError as exc:
         if "missing_scope" in str(exc) or "not_allowed_token_type" in str(exc):
             raise SupportError(
@@ -865,10 +871,14 @@ def poll(args):
                 if skipped:
                     # Local diagnostic only; do not wake firstmate every poll.
                     pass
+            except TransientSupportError as exc:
+                state["dm_enabled"] = False
+                state["dm_error"] = str(exc)
+                # A cursor poll loses no messages when one DM capability fetch times out.
+                pass
             except SupportError as exc:
                 state["dm_enabled"] = False
                 state["dm_error"] = str(exc)
-                # Only surface hard DM disable (missing scopes), not per-IM skips.
                 output.append("dm-disabled: " + str(exc))
         # Firstmate wakes for unannounced thread follow-ups (@Fenek in open tickets).
         for fkey, follow in sorted((state.get("thread_followups") or {}).items()):
