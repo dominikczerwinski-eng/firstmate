@@ -1,0 +1,185 @@
+==============================================================
+SCENARIO: 1. healthy baseline - DM intake works   (fake Slack behaviour: healthy)
+==============================================================
+$ fm-slack-support.sh poll
+no new Slack support reports
+[exit 0]
+
+$ fm-slack-support.sh status
+channel: #support
+token: configured
+language: pl
+dm_config: on
+dm_enabled: yes
+latest: (none)
+[exit 0]
+
+-- Slack calls the poller actually made --
+1 auth.test 
+1 conversations.history C-support
+1 conversations.history D-alice
+2 conversations.list 
+1 users.list 
+
+==============================================================
+SCENARIO: 2. transient network timeout during DM probe   (fake Slack behaviour: net_timeout)
+==============================================================
+$ fm-slack-support.sh poll
+no new Slack support reports
+[exit 0]
+
+$ fm-slack-support.sh status
+channel: #support
+token: configured
+language: pl
+dm_config: on
+dm_enabled: yes
+latest: (none)
+[exit 0]
+
+-- Slack calls the poller actually made --
+1 auth.test 
+1 conversations.history C-support
+2 conversations.list 
+1 users.list 
+
+==============================================================
+SCENARIO: 3. durable scope loss (im:history/im:read revoked)   (fake Slack behaviour: scope_loss)
+==============================================================
+$ fm-slack-support.sh poll
+dm-disabled: DM support needs Slack scopes im:history and im:read (reinstall the Fenek app after adding them); channel poll still works
+[exit 0]
+
+$ fm-slack-support.sh status
+channel: #support
+token: configured
+language: pl
+dm_config: on
+dm_enabled: no
+dm_error: DM support needs Slack scopes im:history and im:read (reinstall the Fenek app after adding them); channel poll still works
+latest: (none)
+[exit 0]
+
+-- Slack calls the poller actually made --
+1 auth.test 
+1 conversations.history C-support
+2 conversations.list 
+1 users.list 
+
+==============================================================
+SCENARIO: 4. ADVERSARIAL: timeout right after a real scope loss   (fake Slack behaviour: net_timeout)
+==============================================================
+$ fm-slack-support.sh poll
+no new Slack support reports
+[exit 0]
+
+$ fm-slack-support.sh status
+channel: #support
+token: configured
+language: pl
+dm_config: on
+dm_enabled: no
+dm_error: DM support needs Slack scopes im:history and im:read (reinstall the Fenek app after adding them); channel poll still works
+latest: (none)
+[exit 0]
+
+-- Slack calls the poller actually made --
+1 auth.test 
+1 conversations.history C-support
+2 conversations.list 
+1 users.list 
+
+==============================================================
+SCENARIO: 5. recovery - healthy poll after the outage   (fake Slack behaviour: healthy)
+==============================================================
+$ fm-slack-support.sh poll
+no new Slack support reports
+[exit 0]
+
+$ fm-slack-support.sh status
+channel: #support
+token: configured
+language: pl
+dm_config: on
+dm_enabled: yes
+latest: (none)
+[exit 0]
+
+-- Slack calls the poller actually made --
+1 auth.test 
+1 conversations.history C-support
+1 conversations.history D-alice
+2 conversations.list 
+1 users.list 
+
+==============================================================
+SCENARIO: 6. ADVERSARIAL: per-DM HTTP 429 on one conversation   (fake Slack behaviour: dm_429)
+==============================================================
+$ fm-slack-support.sh poll
+dm-retry: 1 DM fetch(es) deferred to the next poll: Slack API HTTP error 429
+[exit 0]
+
+$ fm-slack-support.sh status
+channel: #support
+token: configured
+language: pl
+dm_config: on
+dm_enabled: yes
+latest: (none)
+[exit 0]
+
+-- Slack calls the poller actually made --
+1 auth.test 
+1 conversations.history C-support
+1 conversations.history D-alice
+1 conversations.history D-bob
+2 conversations.list 
+1 users.list 
+
+==============================================================
+SCENARIO: 7. ADVERSARIAL: truncated HTTP body mid-read on one DM   (fake Slack behaviour: dm_truncated)
+==============================================================
+$ fm-slack-support.sh poll
+dm-retry: 1 DM fetch(es) deferred to the next poll: Slack API connection failed: IncompleteRead
+[exit 0]
+
+$ fm-slack-support.sh status
+channel: #support
+token: configured
+language: pl
+dm_config: on
+dm_enabled: yes
+latest: (none)
+[exit 0]
+
+-- Slack calls the poller actually made --
+1 auth.test 
+1 conversations.history C-support
+1 conversations.history D-alice
+1 conversations.history D-bob
+2 conversations.list 
+1 users.list 
+
+==============================================================
+SCENARIO: 8. final health check   (fake Slack behaviour: healthy)
+==============================================================
+$ fm-slack-support.sh poll
+no new Slack support reports
+[exit 0]
+
+$ fm-slack-support.sh status
+channel: #support
+token: configured
+language: pl
+dm_config: on
+dm_enabled: yes
+latest: (none)
+[exit 0]
+
+-- Slack calls the poller actually made --
+1 auth.test 
+1 conversations.history C-support
+1 conversations.history D-alice
+2 conversations.list 
+1 users.list 
+

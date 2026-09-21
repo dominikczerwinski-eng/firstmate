@@ -1,0 +1,39 @@
+Same product surface, same simulated Slack outage, two versions of the poller.
+Pre-fix poller: bin/fm-slack-support.py at edf0434 (parent of the transient-classification fix).
+Post-fix poller: bin/fm-slack-support.py at 7098c84 (this branch head).
+
+==============================================================
+BEFORE THE FIX (edf0434)
+==============================================================
+step 1 - healthy poll establishes DM capability
+$ poll
+no new Slack support reports
+[exit 0]
+$ status
+dm_enabled: yes
+
+step 2 - the network drops mid-poll (connection closed during conversations.list?types=im)
+$ poll
+dm-disabled: Slack API connection failed: RemoteDisconnected
+[exit 0]
+$ status
+dm_enabled: no
+dm_error: Slack API connection failed: RemoteDisconnected
+
+==============================================================
+AFTER THE FIX (7098c84)
+==============================================================
+step 1 - healthy poll establishes DM capability
+$ poll
+no new Slack support reports
+[exit 0]
+$ status
+dm_enabled: yes
+
+step 2 - the network drops mid-poll (connection closed during conversations.list?types=im)
+$ poll
+no new Slack support reports
+[exit 0]
+$ status
+dm_enabled: yes
+

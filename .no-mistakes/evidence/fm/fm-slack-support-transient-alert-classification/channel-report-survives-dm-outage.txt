@@ -1,0 +1,94 @@
+A real #support report is ingested in the SAME poll in which one DM's HTTP response is truncated mid-read.
+This is the case that used to escape transient classification: the reporter had already been acked,
+so an uncaught IncompleteRead would skip the state save and re-ack the same person on the next poll.
+
+== poll 1: #support report arrives while DM D-alice's response is truncated ==
+$ fm-slack-support.sh poll
+needs-human 1700000100.000100 (channel): temat prawny / compliance
+dm-retry: 1 DM fetch(es) deferred to the next poll: Slack API connection failed: IncompleteRead
+[exit 0]
+
+-- Slack traffic --
+GET conversations.list 
+GET users.list 
+GET conversations.history C-support
+POST chat.postMessage channel=C-support text=<@U-marta> Przyjąłem. Ten temat trafia do kolejki poprawy z ręcznym przeglądem (bezpieczeń
+GET auth.test 
+GET conversations.replies C-support
+GET conversations.list 
+GET conversations.history D-alice
+GET conversations.history D-bob
+
+$ fm-slack-support.sh status
+channel: #support
+token: configured
+language: pl
+dm_config: on
+dm_enabled: yes
+latest: 1700000100.000100
+held: 1
+
+== poll 2: the blip is over; the reporter must NOT be acked a second time ==
+$ fm-slack-support.sh poll
+no new Slack support reports
+[exit 0]
+
+-- Slack traffic (no second chat.postMessage to U-marta's thread) --
+GET conversations.list 
+GET users.list 
+GET conversations.history C-support
+GET auth.test 
+GET conversations.replies C-support
+GET conversations.list 
+GET conversations.history D-alice
+GET conversations.history D-bob
+
+$ fm-slack-support.sh status
+channel: #support
+token: configured
+language: pl
+dm_config: on
+dm_enabled: yes
+latest: 1700000100.000100
+held: 1
+
+==============================================================
+SAME two polls against the PRE-FIX poller (edf0434) for contrast
+==============================================================
+== poll 1 ==
+  File "/tmp/fm-slack-lab.iq1qqu/fm-slack-support.prefix.py", line 365, in fetch_messages
+    return client.paged("conversations.history", "messages", params)
+           ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/tmp/fm-slack-lab.iq1qqu/fm-slack-support.prefix.py", line 220, in paged
+    result = self.call(method, query)
+  File "/tmp/fm-slack-lab.iq1qqu/fm-slack-support.prefix.py", line 196, in call
+    raw = response.read()
+  File "/opt/homebrew/Cellar/python@3.14/3.14.7/Frameworks/Python.framework/Versions/3.14/lib/python3.14/http/client.py", line 510, in read
+    s = self._safe_read(self.length)
+  File "/opt/homebrew/Cellar/python@3.14/3.14.7/Frameworks/Python.framework/Versions/3.14/lib/python3.14/http/client.py", line 671, in _safe_read
+    raise IncompleteRead(data, amt - len(data))
+http.client.IncompleteRead: IncompleteRead(27 bytes read, 4069 more expected)
+[exit 1]
+-- Slack traffic --
+GET conversations.list 
+GET users.list 
+GET conversations.history C-support
+POST chat.postMessage channel=C-support text=<@U-marta> Przyjąłem. Ten temat trafia do kolejki poprawy z ręcznym przeglądem (bezpieczeń
+GET auth.test 
+GET conversations.replies C-support
+GET conversations.list 
+GET conversations.history D-alice
+
+== poll 2 (blip over) ==
+needs-human 1700000100.000100 (channel): temat prawny / compliance
+[exit 0]
+-- Slack traffic --
+GET conversations.list 
+GET users.list 
+GET conversations.history C-support
+POST chat.postMessage channel=C-support text=<@U-marta> Przyjąłem. Ten temat trafia do kolejki poprawy z ręcznym przeglądem (bezpieczeń
+GET auth.test 
+GET conversations.replies C-support
+GET conversations.list 
+GET conversations.history D-alice
+GET conversations.history D-bob
